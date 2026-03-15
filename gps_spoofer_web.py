@@ -161,6 +161,7 @@ HTML = r"""
   .btn-gen     { border-color: var(--accent2); color: var(--accent2); }
   .btn-sim     { border-color: var(--accent);  color: var(--accent); }
   .btn-loop    { border-color: var(--accent);  color: var(--accent); }
+  .btn-stream  { border-color: var(--accent2); color: var(--accent2); }
   .btn-stop    { border-color: var(--danger);  color: var(--danger); }
   .btn-eph     { border-color: var(--warn);    color: var(--warn); }
   .btn-remote  { border-color: #ff6347;        color: #ff6347; }
@@ -383,6 +384,7 @@ HTML = r"""
         <button class="btn btn-eph"    id="btn-eph"    onclick="doUpdateEph()">EPH</button>
         <button class="btn btn-sim"    id="btn-sim"    onclick="doSim()">SIM</button>
         <button class="btn btn-loop"   id="btn-loop"   onclick="doLoop()">LOOP</button>
+        <button class="btn btn-stream" id="btn-stream" onclick="doStream()">STREAM</button>
         <button class="btn btn-stop"   id="btn-stop"   onclick="doStop()">STOP</button>
       </div>
       <div class="progress-wrap" id="progress-wrap">
@@ -519,6 +521,13 @@ HTML = r"""
         <span class="slider-val" id="cores-val">1</span>
       </div>
       <div class="toggle-row">
+        <span class="toggle-label">Stream Mode</span>
+        <label class="toggle">
+          <input type="checkbox" id="stream-mode-toggle" onchange="onStreamModeChange(this.checked)">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="toggle-row">
         <span class="toggle-label">Auto Blast</span>
         <label class="toggle">
           <input type="checkbox" id="auto-blast-toggle" onchange="onAutoBlastChange(this.checked)">
@@ -608,7 +617,7 @@ function updateUI(s) {
   setBtn('btn-eph',    !anyActive, s.ephemeris_updating, 'active-eph', s.ephemeris_updating ? 'EPH...' : 'EPH');
   setBtn('btn-sim',    !anyActive, s.running && !s.looping, 'active-sim', s.running && !s.looping ? 'TX...' : 'SIM');
   setBtn('btn-loop',   !anyActive, s.running && s.looping, 'active-loop', s.running && s.looping ? 'LOOP...' : 'LOOP');
-  setBtn('btn-stream', !anyActive || s.streaming, s.streaming, 'active-gen', s.streaming ? 'STREAM...' : 'STREAM');
+  setBtn('btn-stream', !anyActive, s.is_streaming, 'active-gen', s.is_streaming ? 'STREAM...' : 'STREAM');
   setBtn('btn-stop',   anyActive || s.running, false, '', 'STOP');
 
   // Show map overlay when transmitting, form when idle
@@ -702,6 +711,8 @@ async function apiPost(url, data={}) {
 }
 
 function doGen()       { apiPost('/api/generate'); }
+function doStream()    { apiPost('/api/stream'); }
+function onStreamModeChange(v) { apiPost('/api/set_stream_mode', {enabled: v}); }
 function doRemoteGen() { apiPost('/api/remote_generate'); }
 function doSim()       { apiPost('/api/sim'); }
 function doLoop()      { apiPost('/api/loop'); }
@@ -1043,6 +1054,21 @@ def api_loop():
     return jsonify({'ok': ok})
 
 
+@app.route('/api/stream', methods=['POST'])
+def api_stream():
+    stream_mode = core.config.get('stream_mode', False)
+    if stream_mode:
+        ok = core.start_stream_loop()
+    else:
+        ok = core.start_stream()
+    return jsonify({'ok': ok})
+@app.route('/api/set_stream_mode', methods=['POST'])
+def api_set_stream_mode():
+    data = request.get_json()
+    core.config['stream_mode'] = bool(data.get('enabled', False))
+    from gps_spoofer_core import save_config
+    save_config(core.config)
+    return jsonify({'ok': True})
 @app.route('/api/stop', methods=['POST'])
 def api_stop():
     core.stop_all()
