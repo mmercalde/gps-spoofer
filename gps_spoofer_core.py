@@ -32,6 +32,7 @@ SIM_OUTPUT                = os.path.expanduser("~/gps_spoofer/sim_output/gpssim.
 TEMP_DIR                  = os.path.expanduser("~/gps_spoofer/temp")
 TEMP_ROUTE_MOTION_FILE    = os.path.join(TEMP_DIR, "temp_route_motion.csv")
 GPS_SDR_SIM_EXECUTABLE    = os.path.expanduser("~/gps-sdr-sim/gps-sdr-sim")
+GPS_SDR_SIM_4CORE_EXECUTABLE = os.path.expanduser("~/gps-sdr-sim/gps-sdr-sim-4core")
 HACKRF_TRANSFER_EXECUTABLE = "hackrf_transfer"
 HACKRF_SD_GPS_PATH        = "/media/michael/3402-CA84/GPS/"
 
@@ -764,7 +765,15 @@ class SpooferCore:
             with open(LATEST_TIME_PATH) as f:
                 ts = f.read().strip()
             if ts:
-                args += ["-t", ts]
+                from datetime import datetime as _dt
+                try:
+                    ts_date = _dt.strptime(ts.split(',')[0], '%Y/%m/%d').date()
+                    if ts_date >= _dt.utcnow().date():
+                        args += ["-t", ts]
+                    else:
+                        self.log.log(f"Skipping stale -t timestamp: {ts}")
+                except Exception:
+                    args += ["-t", ts]
                 self.log.log(f"Sim time aligned to: {ts}")
 
         motion_file = None
@@ -998,14 +1007,22 @@ class SpooferCore:
             return None, "No valid ephemeris file."
         loc_mode = self.config.get("location_mode", "Static (Address Lookup)")
         duration = self.config.get("duration", 60)
-        cores = int(self.config.get("gen_threads", 1))
-        exe = GPS_SDR_SIM_4CORE_EXECUTABLE if cores > 1 else GPS_SDR_SIM_EXECUTABLE
+        cores = int(self.config.get("gen_cores", 1))
+        exe = GPS_SDR_SIM_4CORE_EXECUTABLE  # always use 4core binary for streaming (-o - support)
         args = [exe, "-e", eph]
         if os.path.exists(LATEST_TIME_PATH):
             with open(LATEST_TIME_PATH) as f:
                 ts = f.read().strip()
             if ts:
-                args += ["-t", ts]
+                from datetime import datetime as _dt
+                try:
+                    ts_date = _dt.strptime(ts.split(',')[0], '%Y/%m/%d').date()
+                    if ts_date >= _dt.utcnow().date():
+                        args += ["-t", ts]
+                    else:
+                        self.log.log(f"Skipping stale -t timestamp: {ts}")
+                except Exception:
+                    args += ["-t", ts]
         if "Static" in loc_mode:
             lat, lon = self.latlon
             alt = self.altitude if self.altitude is not None else DEFAULT_ALTITUDE_METERS
@@ -1051,34 +1068,33 @@ class SpooferCore:
         gain = self.config.get("gain", 15)
         freq_hz = self.config.get("frequency_hz", 1575420000)
         hackrf_cmd = ["hackrf_transfer", "-t", "/dev/stdin", "-f", str(freq_hz),
-                      "-s", "2600000", "-a", "1", "-x", str(gain)]
+                      "-s", "2600000", "-a", "1", "-x", str(gain), "-R"]
         self.log.log(f"Stream CMD: {' '.join(shlex.quote(a) for a in args)}")
-        try:
-            gen_proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-            hackrf_proc = subprocess.Popen(hackrf_cmd, stdin=gen_proc.stdout,
-                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            gen_proc.stdout.close()
-            self.proc = hackrf_proc
-            self.running = True
-            self.is_streaming = True
-            self.is_looping_active = False
-            self._fire_state_change()
-            threading.Thread(target=self._stream_watcher, args=("HACKRF", hackrf_proc.stdout), daemon=True).start()
-            def _finisher():
+        def _run():
+            try:
+                gen_proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+                hackrf_proc = subprocess.Popen(hackrf_cmd, stdin=gen_proc.stdout,
+                                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                gen_proc.stdout.close()
+                self.proc = hackrf_proc
+                self.running = True
+                self.is_streaming = True
+                self.is_looping_active = False
+                self._fire_state_change()
+                threading.Thread(target=self._stream_watcher,
+                                 args=("HACKRF", hackrf_proc.stdout), daemon=True).start()
                 hackrf_proc.wait()
                 gen_proc.wait()
+            except Exception as e:
+                self.log.log(f"Stream error: {e}")
+            finally:
                 self.running = False
                 self.is_streaming = False
                 self.proc = None
                 self._fire_state_change()
                 self.log.log("Stream ended.")
-            threading.Thread(target=_finisher, daemon=True).start()
-            return True
-        except Exception as e:
-            self.log.log(f"Stream error: {e}")
-            self.running = False
-            self._fire_state_change()
-            return False
+        threading.Thread(target=_run, daemon=True).start()
+        return True
 
     def start_stream_loop(self) -> bool:
         """Stream loop — continuously pipes gps-sdr-sim to hackrf_transfer."""
