@@ -130,7 +130,13 @@ def download_ephemeris():
                     for line in f:
                         if line.strip() and line[0].isdigit():
                             p = line.split()
-                            ts = f"20{int(p[1]):02d}/{int(p[2]):02d}/{int(p[3]):02d},{int(p[4]):02d}:{int(p[5]):02d}:00"
+                            # Derive date from filename (authoritative) not RINEX data line
+                            # brdc0750.26n -> day 075, year 2026 -> March 16
+                            import datetime as _dt
+                            _doy = int(os.path.basename(out)[4:7])
+                            _yr  = 2000 + int(os.path.basename(out)[7:9])
+                            _d   = _dt.datetime(_yr, 1, 1) + _dt.timedelta(days=_doy - 1)
+                            ts = f"{_d.year}/{_d.month:02d}/{_d.day:02d},00:00:00"
                             with open(L_T, "w") as tf: tf.write(ts + "\n")
                             with open(L_F, "w") as ff: ff.write(out + "\n")
                             with open(L_DL, "w") as df:
