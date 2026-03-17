@@ -702,6 +702,7 @@ class GPSSpooferGUI:
                 gen_proc.stdout.close()
                 self.proc = hackrf_proc
                 self.running = True
+                self.is_streaming = True
                 self.master.after(0, self._update_all_button_states)
                 self.add_to_terminal(f"Streaming... Gen PID={gen_proc.pid} HackRF PID={hackrf_proc.pid}")
                 for line in iter(hackrf_proc.stdout.readline, ''):
@@ -713,6 +714,7 @@ class GPSSpooferGUI:
                 self.master.after(0, self.add_to_terminal, f"Stream error: {e}")
             finally:
                 self.running = False
+                self.is_streaming = False
                 self.proc = None
                 self.master.after(0, self._update_all_button_states)
                 self.master.after(0, self.add_to_terminal, "Stream ended.")
