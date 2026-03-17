@@ -1008,7 +1008,7 @@ class SpooferCore:
         loc_mode = self.config.get("location_mode", "Static (Address Lookup)")
         duration = self.config.get("duration", 60)
         cores = int(self.config.get("gen_cores", 1))
-        exe = GPS_SDR_SIM_4CORE_EXECUTABLE  # always use 4core binary for streaming (-o - support)
+        exe = GPS_SDR_SIM_4CORE_EXECUTABLE if cores > 1 else GPS_SDR_SIM_EXECUTABLE
         args = [exe, "-e", eph]
         if os.path.exists(LATEST_TIME_PATH):
             with open(LATEST_TIME_PATH) as f:
