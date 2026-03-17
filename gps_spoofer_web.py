@@ -161,7 +161,6 @@ HTML = r"""
   .btn-gen     { border-color: var(--accent2); color: var(--accent2); }
   .btn-sim     { border-color: var(--accent);  color: var(--accent); }
   .btn-loop    { border-color: var(--accent);  color: var(--accent); }
-  .btn-stream  { border-color: var(--accent2); color: var(--accent2); }
   .btn-stop    { border-color: var(--danger);  color: var(--danger); }
   .btn-eph     { border-color: var(--warn);    color: var(--warn); }
   .btn-remote  { border-color: #ff6347;        color: #ff6347; }
@@ -384,7 +383,6 @@ HTML = r"""
         <button class="btn btn-eph"    id="btn-eph"    onclick="doUpdateEph()">EPH</button>
         <button class="btn btn-sim"    id="btn-sim"    onclick="doSim()">SIM</button>
         <button class="btn btn-loop"   id="btn-loop"   onclick="doLoop()">LOOP</button>
-        <button class="btn btn-stream" id="btn-stream" onclick="doStream()">STREAM</button>
         <button class="btn btn-stop"   id="btn-stop"   onclick="doStop()">STOP</button>
       </div>
       <div class="progress-wrap" id="progress-wrap">
@@ -514,19 +512,6 @@ HTML = r"""
                oninput="onBlastIntChange(this.value)">
         <span class="slider-val" id="blast-int-val">5 m</span>
       </div>
-      <div class="slider-row">
-        <label>Cores</label>
-        <input type="range" id="cores-slider" min="1" max="4" step="1" value="1"
-               oninput="onCoresChange(this.value)">
-        <span class="slider-val" id="cores-val">1</span>
-      </div>
-      <div class="toggle-row">
-        <span class="toggle-label">Stream Mode</span>
-        <label class="toggle">
-          <input type="checkbox" id="stream-mode-toggle" onchange="onStreamModeChange(this.checked)">
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
       <div class="toggle-row">
         <span class="toggle-label">Auto Blast</span>
         <label class="toggle">
@@ -617,7 +602,6 @@ function updateUI(s) {
   setBtn('btn-eph',    !anyActive, s.ephemeris_updating, 'active-eph', s.ephemeris_updating ? 'EPH...' : 'EPH');
   setBtn('btn-sim',    !anyActive, s.running && !s.looping, 'active-sim', s.running && !s.looping ? 'TX...' : 'SIM');
   setBtn('btn-loop',   !anyActive, s.running && s.looping, 'active-loop', s.running && s.looping ? 'LOOP...' : 'LOOP');
-  setBtn('btn-stream', !anyActive, s.is_streaming, 'active-gen', s.is_streaming ? 'STREAM...' : 'STREAM');
   setBtn('btn-stop',   anyActive || s.running, false, '', 'STOP');
 
   // Show map overlay when transmitting, form when idle
@@ -711,8 +695,6 @@ async function apiPost(url, data={}) {
 }
 
 function doGen()       { apiPost('/api/generate'); }
-function doStream()    { apiPost('/api/stream'); }
-function onStreamModeChange(v) { apiPost('/api/set_stream_mode', {enabled: v}); }
 function doRemoteGen() { apiPost('/api/remote_generate'); }
 function doSim()       { apiPost('/api/sim'); }
 function doLoop()      { apiPost('/api/loop'); }
@@ -787,10 +769,6 @@ function onBlastIntChange(v) {
   document.getElementById('blast-int-val').textContent = v + ' m';
   clearTimeout(blastIntTimer);
   blastIntTimer = setTimeout(() => apiPost('/api/set_blast_interval', {minutes: parseInt(v)}), 400);
-}
-function onCoresChange(v) {
-  document.getElementById('cores-val').textContent = v;
-  apiPost('/api/set_gen_threads', {threads: parseInt(v)});
 }
 function onAutoBlastChange(v) {
   apiPost('/api/set_auto_blast', {enabled: v});
@@ -909,8 +887,6 @@ async function initFromStatus() {
     document.getElementById('blast-val').textContent = (s.blast_duration_sec || 3) + ' s';
     document.getElementById('blast-int-slider').value = s.auto_blast_interval_min || 5;
     document.getElementById('blast-int-val').textContent = (s.auto_blast_interval_min || 5) + ' m';
-    document.getElementById('cores-slider').value = s.gen_threads || 1;
-    document.getElementById('cores-val').textContent = s.gen_threads || 1;
     document.getElementById('auto-blast-toggle').checked = s.auto_blast_enabled || false;
     if (s.use_roads !== undefined) document.getElementById('use-roads-toggle').checked = s.use_roads;
   } catch(e) {}
@@ -1054,21 +1030,6 @@ def api_loop():
     return jsonify({'ok': ok})
 
 
-@app.route('/api/stream', methods=['POST'])
-def api_stream():
-    stream_mode = core.config.get('stream_mode', False)
-    if stream_mode:
-        ok = core.start_stream_loop()
-    else:
-        ok = core.start_stream()
-    return jsonify({'ok': ok})
-@app.route('/api/set_stream_mode', methods=['POST'])
-def api_set_stream_mode():
-    data = request.get_json()
-    core.config['stream_mode'] = bool(data.get('enabled', False))
-    from gps_spoofer_core import save_config
-    save_config(core.config)
-    return jsonify({'ok': True})
 @app.route('/api/stop', methods=['POST'])
 def api_stop():
     core.stop_all()

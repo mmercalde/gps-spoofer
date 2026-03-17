@@ -32,7 +32,6 @@ SIM_OUTPUT                = os.path.expanduser("~/gps_spoofer/sim_output/gpssim.
 TEMP_DIR                  = os.path.expanduser("~/gps_spoofer/temp")
 TEMP_ROUTE_MOTION_FILE    = os.path.join(TEMP_DIR, "temp_route_motion.csv")
 GPS_SDR_SIM_EXECUTABLE    = os.path.expanduser("~/gps-sdr-sim/gps-sdr-sim")
-GPS_SDR_SIM_4CORE_EXECUTABLE = os.path.expanduser("~/gps-sdr-sim/gps-sdr-sim-4core")
 HACKRF_TRANSFER_EXECUTABLE = "hackrf_transfer"
 HACKRF_SD_GPS_PATH        = "/media/michael/3402-CA84/GPS/"
 
@@ -466,7 +465,6 @@ class SpooferCore:
 
         self.gps_sim_proc                 = None   # subprocess.Popen for local gen
         self.proc                         = None   # subprocess.Popen for hackrf_transfer
-        self.is_streaming                 = False
         self.remote_generation_in_progress = False
 
         self.transfer_in_progress         = False
@@ -547,7 +545,6 @@ class SpooferCore:
         return {
             "running":                       self.running,
             "is_looping":                    self.is_looping_active,
-            "is_streaming":                  self.is_streaming,
             "is_blast_phase":                self.is_manual_blast_initial_phase,
             "auto_blast_active":             self.auto_blast_active_phase,
             "auto_blast_enabled":            self.auto_blast_enabled,
@@ -765,15 +762,7 @@ class SpooferCore:
             with open(LATEST_TIME_PATH) as f:
                 ts = f.read().strip()
             if ts:
-                from datetime import datetime as _dt
-                try:
-                    ts_date = _dt.strptime(ts.split(',')[0], '%Y/%m/%d').date()
-                    if ts_date >= _dt.utcnow().date():
-                        args += ["-t", ts]
-                    else:
-                        self.log.log(f"Skipping stale -t timestamp: {ts}")
-                except Exception:
-                    args += ["-t", ts]
+                args += ["-t", ts]
                 self.log.log(f"Sim time aligned to: {ts}")
 
         motion_file = None
@@ -999,166 +988,6 @@ class SpooferCore:
     def start_loop(self) -> bool:
         """Loop button: blast then loop."""
         return self._start_hackrf(loop=True, is_blast=True)
-
-    def _build_sim_args(self):
-        """Build gps-sdr-sim args for streaming (output to stdout via -o -)."""
-        eph = self._resolve_ephemeris()
-        if not eph:
-            return None, "No valid ephemeris file."
-        loc_mode = self.config.get("location_mode", "Static (Address Lookup)")
-        duration = self.config.get("duration", 60)
-        cores = int(self.config.get("gen_cores", 1))
-        exe = GPS_SDR_SIM_4CORE_EXECUTABLE if cores > 1 else GPS_SDR_SIM_EXECUTABLE
-        args = [exe, "-e", eph]
-        if os.path.exists(LATEST_TIME_PATH):
-            with open(LATEST_TIME_PATH) as f:
-                ts = f.read().strip()
-            if ts:
-                from datetime import datetime as _dt
-                try:
-                    ts_date = _dt.strptime(ts.split(',')[0], '%Y/%m/%d').date()
-                    if ts_date >= _dt.utcnow().date():
-                        args += ["-t", ts]
-                    else:
-                        self.log.log(f"Skipping stale -t timestamp: {ts}")
-                except Exception:
-                    args += ["-t", ts]
-        if "Static" in loc_mode:
-            lat, lon = self.latlon
-            alt = self.altitude if self.altitude is not None else DEFAULT_ALTITUDE_METERS
-            if lat is None:
-                return None, "Lat/Lon not set."
-            args += ["-l", f"{float(lat):.7f},{float(lon):.7f},{float(alt):.1f}"]
-            args += ["-d", str(duration)]
-        elif "Route" in loc_mode:
-            if self.start_latlon[0] is None or self.end_latlon[0] is None:
-                return None, "Route start/end not geocoded."
-            s_alt = self.start_altitude or DEFAULT_ALTITUDE_METERS
-            e_alt = self.end_altitude   or DEFAULT_ALTITUDE_METERS
-            motion_file = generate_route_motion_file(
-                self.start_latlon, self.end_latlon, s_alt, e_alt, duration, self.log,
-                api_key=self.config.get("Maps_api_key"),
-                use_roads=self.config.get("use_roads", True),
-                route_cache=[self._road_route_cache])
-            if not motion_file:
-                return None, "Failed to generate route CSV."
-            args += ["-x", motion_file, "-d", str(min(duration, 3600))]
-        else:
-            motion_file = self.config.get("motion_file_path", "")
-            if not motion_file or not os.path.exists(motion_file):
-                return None, "Motion file not found."
-            if "ECEF" in loc_mode:   args += ["-u", motion_file]
-            elif "LLH" in loc_mode:  args += ["-x", motion_file]
-            elif "NMEA" in loc_mode: args += ["-g", motion_file]
-            args += ["-d", str(min(duration, 3600))]
-        args += ["-b", "8", "-o", "-"]
-        env = os.environ.copy()
-        env["GPSSIM_NTHREADS"] = str(cores)
-        return args, env
-
-    def start_stream(self) -> bool:
-        """Stream once — pipe gps-sdr-sim stdout directly to hackrf_transfer."""
-        if self.is_any_operation_active():
-            self.log.log("Busy: another operation active.")
-            return False
-        args, env = self._build_sim_args()
-        if args is None:
-            self.log.log(f"Stream error: {env}")
-            return False
-        gain = self.config.get("gain", 15)
-        freq_hz = self.config.get("frequency_hz", 1575420000)
-        hackrf_cmd = ["hackrf_transfer", "-t", "/dev/stdin", "-f", str(freq_hz),
-                      "-s", "2600000", "-a", "1", "-x", str(gain), "-R"]
-        self.log.log(f"Stream CMD: {' '.join(shlex.quote(a) for a in args)}")
-        def _run():
-            try:
-                gen_proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-                hackrf_proc = subprocess.Popen(hackrf_cmd, stdin=gen_proc.stdout,
-                                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-                gen_proc.stdout.close()
-                self.proc = hackrf_proc
-                self.running = True
-                self.is_streaming = True
-                self.is_looping_active = False
-                self._fire_state_change()
-                threading.Thread(target=self._stream_watcher,
-                                 args=("HACKRF", hackrf_proc.stdout), daemon=True).start()
-                hackrf_proc.wait()
-                gen_proc.wait()
-            except Exception as e:
-                self.log.log(f"Stream error: {e}")
-            finally:
-                self.running = False
-                self.is_streaming = False
-                self.proc = None
-                self._fire_state_change()
-                self.log.log("Stream ended.")
-        threading.Thread(target=_run, daemon=True).start()
-        return True
-
-    def start_stream_loop(self) -> bool:
-        """Stream loop — continuously pipes gps-sdr-sim to hackrf_transfer."""
-        if self.is_any_operation_active():
-            self.log.log("Busy: another operation active.")
-            return False
-        gain = self.config.get("gain", 15)
-        freq_hz = self.config.get("frequency_hz", 1575420000)
-        hackrf_cmd = ["hackrf_transfer", "-t", "/dev/stdin", "-f", str(freq_hz),
-                      "-s", "2600000", "-a", "1", "-x", str(gain)]
-        self.log.log("Stream loop starting...")
-        try:
-            hackrf_proc = subprocess.Popen(hackrf_cmd, stdin=subprocess.PIPE,
-                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            self.proc = hackrf_proc
-            self.running = True
-            self.is_streaming = True
-            self.is_looping_active = True
-            self._fire_state_change()
-            self.log.log(f"HackRF PID={hackrf_proc.pid}")
-            def _run_loop():
-                try:
-                    while self.running:
-                        args, env = self._build_sim_args()
-                        if args is None:
-                            self.log.log(f"Stream loop error: {env}")
-                            break
-                        gen_proc = subprocess.Popen(args, stdout=subprocess.PIPE,
-                                                    stderr=subprocess.PIPE, env=env)
-                        self.log.log(f"Gen PID={gen_proc.pid} streaming...")
-                        try:
-                            while self.running:
-                                chunk = gen_proc.stdout.read(65536)
-                                if not chunk: break
-                                hackrf_proc.stdin.write(chunk)
-                                hackrf_proc.stdin.flush()
-                        except BrokenPipeError:
-                            break
-                        gen_proc.stdout.close()
-                        gen_proc.wait()
-                        if not self.running: break
-                        self.log.log("Loop: restarting route...")
-                except Exception as e:
-                    self.log.log(f"Stream loop error: {e}")
-                finally:
-                    try: hackrf_proc.stdin.close()
-                    except: pass
-                    try: hackrf_proc.kill()
-                    except: pass
-                    hackrf_proc.wait()
-                    self.running = False
-                    self.is_streaming = False
-                    self.is_looping_active = False
-                    self.proc = None
-                    self._fire_state_change()
-                    self.log.log("Stream loop ended.")
-            threading.Thread(target=_run_loop, daemon=True).start()
-            return True
-        except Exception as e:
-            self.log.log(f"Stream loop error: {e}")
-            self.running = False
-            self.looping = False
-            self._fire_state_change()
-            return False
 
     def _start_hackrf(self, loop=False, is_blast=False,
                       blast_duration_override=None, gain_override=None,
