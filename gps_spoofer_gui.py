@@ -1160,8 +1160,15 @@ class GPSSpooferGUI:
         self.action_buttons["remote_gen"].config(text=remote_gen_text, state=remote_gen_state, style=remote_gen_style)
         self.action_buttons["sim"].config(text=spoof_text, state=spoof_state, style=spoof_style)
         self.action_buttons["loop"].config(text=loop_text, state=loop_state, style=loop_style)
-        # Stream button mirrors Loop state
-        self.action_buttons["stream"].config(text="Stream", state=loop_state, style=loop_style)
+        # Stream button — active only when actually streaming, otherwise enabled when idle
+        _is_streaming = getattr(self, 'is_streaming', False)
+        if _is_streaming:
+            _stream_text, _stream_style, _stream_state = "Streaming...", "ActiveLoop.TButton", tk.DISABLED
+        elif active_operation_present and not _is_streaming:
+            _stream_text, _stream_style, _stream_state = "Stream", "NonActive.TButton", tk.DISABLED
+        else:
+            _stream_text, _stream_style, _stream_state = "Stream", "TButton", tk.NORMAL
+        self.action_buttons["stream"].config(text=_stream_text, state=_stream_state, style=_stream_style)
         self.action_buttons["update_eph"].config(text=update_eph_text, state=update_eph_state, style=update_eph_style)
         self.action_buttons["to_sd"].config(text=transfer_sim_text, state=transfer_sim_state, style=transfer_sim_style)
         self.action_buttons["file->sd"].config(text=transfer_custom_text, state=transfer_custom_state, style=transfer_custom_style)
