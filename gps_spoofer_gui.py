@@ -1490,12 +1490,17 @@ class GPSSpooferGUI:
                                             eph_path = _p if os.path.isabs(_p) else os.path.join(EPHEMERIS_DIR, _p)
                                     derived_ts = None
                                     if eph_path and os.path.exists(eph_path):
-                                        with open(eph_path, "r") as tf:
-                                            for line in tf:
-                                                if line.strip() and line[0].isdigit():
-                                                    p = line.split()
-                                                    derived_ts = f"20{int(p[1]):02d}/{int(p[2]):02d}/{int(p[3]):02d},00:00:00"
-                                                    break
+                                        # Derive timestamp from filename (authoritative) not RINEX data line
+                                        # brdc0750.26n -> day 075, year 2026 -> March 16
+                                        import datetime as _dt
+                                        _bn = os.path.basename(eph_path)
+                                        try:
+                                            _doy = int(_bn[4:7])
+                                            _yr  = 2000 + int(_bn[7:9])
+                                            _d   = _dt.datetime(_yr, 1, 1) + _dt.timedelta(days=_doy - 1)
+                                            derived_ts = f"{_d.year}/{_d.month:02d}/{_d.day:02d},00:00:00"
+                                        except Exception:
+                                            derived_ts = None
                                     if derived_ts:
                                         with open(LATEST_TIME_PATH, "w") as tf:
                                             tf.write(derived_ts + "\n")
