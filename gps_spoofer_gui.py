@@ -58,6 +58,7 @@ SIM_OUTPUT = os.path.expanduser("~/gps_spoofer/sim_output/gpssim.c8")
 TEMP_DIR = os.path.expanduser("~/gps_spoofer/temp")
 TEMP_ROUTE_MOTION_FILE = os.path.join(TEMP_DIR, "temp_route_motion.csv")
 GPS_SDR_SIM_EXECUTABLE = os.path.expanduser("~/gps-sdr-sim/gps-sdr-sim")
+GPS_SDR_SIM_4CORE_EXECUTABLE = os.path.expanduser("~/gps-sdr-sim/gps-sdr-sim-4core")
 HACKRF_TRANSFER_EXECUTABLE = "hackrf_transfer"
 HACKRF_SD_GPS_PATH = "/media/michael/3402-CA84/GPS/" # User specific
 
@@ -122,7 +123,7 @@ def load_config():
         "end_address": "", "end_latlon": [None, None], "end_altitude": None,
         "location_mode": "Static (Address Lookup)", "motion_file_path": "",
         "gain": 15, "duration": 60, "map_zoom": 14,
-        "frequency_hz": int(DEFAULT_FREQ_HZ_STR), "blast_duration_sec": 3,
+        "frequency_hz": int(DEFAULT_FREQ_HZ_STR), "blast_duration_sec": 3, "gen_cores": 1,
         "ephemeris_file": None, "map_type": "roadmap",
         "auto_blast_enabled": False, "auto_blast_interval_min": 5,
         "active_map_enabled": False,
@@ -307,6 +308,7 @@ class GPSSpooferGUI:
         self.map_playback_center_latlon = None
         self.active_map_enabled = tk.BooleanVar(value=self.config.get("active_map_enabled", False))
         self.glo_jam_enabled = tk.BooleanVar(value=self.config.get("glo_jam_enabled", False))
+        self.stream_mode = tk.BooleanVar(value=False)
         self.glo_jam_active = False
         self.glo_jam_proc = None
         self.glo_jam_duration_sec = self.config.get("glo_jam_duration_sec", DEFAULT_GLO_JAM_SEC)
@@ -367,7 +369,7 @@ class GPSSpooferGUI:
         action_buttons_frame.grid(row=0, column=0, columnspan=2, pady=(2, 5), sticky="ew")
         buttons = [
             ("Gen", self.generate), ("Remote Gen", self.remote_generate), ("Sim", self.start_spoofing),
-            ("Loop", self.loop_signal), ("Auto Blast", self.toggle_auto_blast), ("GLO Jam", self.toggle_glo_jam), ("Update Eph", self.update_ephemeris), ("Sel Eph", self.select_ephemeris_file),
+            ("Loop", self.loop_signal), ("Stream", self.stream_signal), ("Auto Blast", self.toggle_auto_blast), ("GLO Jam", self.toggle_glo_jam), ("Update Eph", self.update_ephemeris), ("Sel Eph", self.select_ephemeris_file),
             ("To SD", self.prompt_and_transfer_to_hackrf), ("File->SD", self.prompt_and_transfer_custom_file),
             ("Stop", self.stop_spoofing), ("Quit", self.quit_gui)
         ]
@@ -380,7 +382,7 @@ class GPSSpooferGUI:
         self._update_auto_blast_button_style()
 
     def _create_control_panel(self):
-        pad_x = 2; pad_y = 1; slider_group_pad_x = 1; vertical_slider_height = 90
+        pad_x = 2; pad_y = 1; slider_group_pad_x = 1; vertical_slider_height = 70
 
         control_scroll_area = ttk.Frame(self.main_app_frame)
         control_scroll_area.grid(row=1, column=0, sticky="nswe")
@@ -441,6 +443,8 @@ class GPSSpooferGUI:
         self.use_roads_var = tk.BooleanVar(value=True)
         self.use_roads_check = ttk.Checkbutton(self.loc_mode_frame, text="Follow Roads",
                                                 variable=self.use_roads_var)
+        self.stream_mode_check = ttk.Checkbutton(self.loc_mode_frame, text="Stream Mode",
+                                                  variable=self.stream_mode)
         self.update_route_labels()
 
         self.motion_file_label = ttk.Label(self.loc_mode_frame, text="Motion File:")
@@ -453,7 +457,7 @@ class GPSSpooferGUI:
 
         sliders_area_frame = ttk.LabelFrame(self.scrollable_control_frame, text="Adjustments")
         sliders_area_frame.grid(row=1, column=0, sticky="ew", pady=(pad_y,0))
-        for i in range(6): sliders_area_frame.columnconfigure(i, weight=1, minsize=60)
+        for i in range(7): sliders_area_frame.columnconfigure(i, weight=1, minsize=42)
         self._create_sliders(sliders_area_frame, vertical_slider_height, pad_x, 0, slider_group_pad_x)
 
     def _create_sliders(self, parent, height, px, lpy, spx):
@@ -485,7 +489,7 @@ class GPSSpooferGUI:
 
         create_simple_slider(4, "Blast(s):", 1, 10, 1, 3, "blast_duration_sec", self.update_blast_duration, "{}s", "blast_duration_slider", "blast_duration_label", "blast_plus_btn", "blast_minus_btn", 1)
         create_simple_slider(5, "Blast Int(m):", 1, 10, 1, 5, "auto_blast_interval_min", self.update_auto_blast_interval, "{}m", "auto_blast_interval_slider", "auto_blast_interval_label", "auto_blast_int_plus_btn", "auto_blast_int_minus_btn", 1)
-        create_simple_slider(6, "GLO Jam(s):", 5, 60, 5, DEFAULT_GLO_JAM_SEC, "glo_jam_duration_sec", self.update_glo_jam_duration, "{}s", "glo_jam_slider", "glo_jam_label", "glo_jam_plus_btn", "glo_jam_minus_btn", 5)
+        create_simple_slider(6, "Cores:", 1, 4, 1, 1, "gen_cores", self.update_gen_cores, "{}c", "gen_cores_slider", "gen_cores_label", "gen_cores_plus_btn", "gen_cores_minus_btn", 1)
 
     def _create_map_display(self):
         map_display_frame = ttk.Frame(self.main_app_frame, padding="1")
@@ -615,6 +619,108 @@ class GPSSpooferGUI:
                 self.action_buttons[btn_key].config(style="ActiveAutoBlast.TButton")
             else:
                 self.action_buttons[btn_key].config(style="TButton")
+
+
+    def stream_signal(self):
+        """Generate IQ data and pipe directly to hackrf_transfer — no file write."""
+        if self.is_any_operation_active(): 
+            messagebox.showwarning("Busy", "Another operation is active. Please stop it first.")
+            return
+        self.add_to_terminal("Preparing stream...")
+
+        # Build gps-sdr-sim args (same as generate but output to stdout)
+        _cores = int(self.config.get("gen_cores", 1))
+        _use_exec = GPS_SDR_SIM_4CORE_EXECUTABLE if _cores > 1 else GPS_SDR_SIM_EXECUTABLE
+        import os as _os; _sim_env = _os.environ.copy(); _sim_env['GPSSIM_NTHREADS'] = str(_cores)
+        args = [_use_exec]
+
+        eph_to_use = self.config.get("ephemeris_file")
+        if not eph_to_use or not os.path.exists(eph_to_use):
+            if os.path.exists(LATEST_FILE_PATH):
+                with open(LATEST_FILE_PATH, "r") as f: eph_to_use = os.path.join(EPHEMERIS_DIR, f.read().strip())
+            else:
+                messagebox.showerror("Error", "No valid ephemeris file."); return
+        if not os.path.exists(eph_to_use):
+            messagebox.showerror("Error", f"Ephemeris file not found."); return
+        args.extend(["-e", eph_to_use])
+
+        if os.path.exists(LATEST_TIME_PATH):
+            with open(LATEST_TIME_PATH, "r") as tf:
+                t_stamp = tf.read().strip()
+            if t_stamp:
+                args.extend(["-t", t_stamp])
+
+        current_loc_mode = self.location_mode_var.get()
+        duration_from_slider = self.duration_slider.get() if hasattr(self, 'duration_slider') else self.config.get("duration", 60)
+
+        if "Static" in current_loc_mode:
+            lat, lon = self.latlon; alt = self.altitude if self.altitude is not None else DEFAULT_ALTITUDE_METERS
+            if lat is None or lon is None:
+                messagebox.showerror("Error", "Lat/Lon not set."); return
+            args.extend(["-l", f"{float(lat):.7f},{float(lon):.7f},{float(alt):.1f}"])
+            duration_for_sim = str(duration_from_slider)
+        elif "Route" in current_loc_mode:
+            if self.start_latlon[0] is None or self.end_latlon[0] is None:
+                messagebox.showerror("Error", "Route addresses not geocoded."); return
+            start_alt = self.start_altitude if self.start_altitude is not None else DEFAULT_ALTITUDE_METERS
+            end_alt = self.end_altitude if self.end_altitude is not None else DEFAULT_ALTITUDE_METERS
+            motion_file = self._generate_route_motion_file(self.start_latlon, self.end_latlon, start_alt, end_alt, duration_from_slider, use_roads=self.use_roads_var.get())
+            if not motion_file:
+                messagebox.showerror("Error", "Failed to generate route CSV."); return
+            args.extend(["-x", motion_file])
+            duration_for_sim = str(min(duration_from_slider, 3600))
+        else:
+            motion_file = self.motion_file_path_var.get()
+            if not motion_file or not os.path.exists(motion_file):
+                messagebox.showerror("Error", "Motion file not found."); return
+            if "ECEF" in current_loc_mode: args.extend(["-u", motion_file])
+            elif "LLH" in current_loc_mode: args.extend(["-x", motion_file])
+            elif "NMEA" in current_loc_mode: args.extend(["-g", motion_file])
+            duration_for_sim = str(min(duration_from_slider, 3600))
+
+        args.extend(["-d", duration_for_sim, "-b", "8", "-o", "-"])
+
+        gain = int(self.config.get("gain", 43))
+        freq_hz = int(self.config.get("frequency_hz", 1575420000))
+
+        hackrf_cmd = [
+            "hackrf_transfer", "-t", "/dev/stdin",
+            "-f", str(freq_hz),
+            "-s", "2600000",
+            "-a", "1",
+            "-x", str(gain),
+            "-R"
+        ]
+
+        self.add_to_terminal(f"Stream CMD: {' '.join(shlex.quote(a) for a in args)}")
+        self.add_to_terminal(f"HackRF CMD: {' '.join(hackrf_cmd)}")
+
+        def _run_stream():
+            try:
+                gen_proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_sim_env)
+                hackrf_proc = subprocess.Popen(hackrf_cmd, stdin=gen_proc.stdout, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                gen_proc.stdout.close()
+                self.proc = hackrf_proc
+                self.running = True
+                self.master.after(0, self._update_all_button_states)
+                self.add_to_terminal(f"Streaming... Gen PID={gen_proc.pid} HackRF PID={hackrf_proc.pid}")
+                for line in iter(hackrf_proc.stdout.readline, ''):
+                    if line.strip():
+                        self.master.after(0, self.add_to_terminal, line.strip())
+                hackrf_proc.wait()
+                gen_proc.wait()
+            except Exception as e:
+                self.master.after(0, self.add_to_terminal, f"Stream error: {e}")
+            finally:
+                self.running = False
+                self.proc = None
+                self.master.after(0, self._update_all_button_states)
+                self.master.after(0, self.add_to_terminal, "Stream ended.")
+                if hasattr(self, 'action_buttons') and 'stream' in self.action_buttons:
+                    self.master.after(0, lambda: self.action_buttons['stream'].config(style='TButton'))
+
+        import threading
+        threading.Thread(target=_run_stream, daemon=True).start()
 
 
     def toggle_auto_blast(self):
@@ -814,6 +920,7 @@ class GPSSpooferGUI:
             self.end_loc_label: {"row": 5, "column": 0, "columnspan": 3, "sticky": "w", "padx": 2, "pady": widget_pady},
             self.end_alt_label:          {"row": 6, "column": 0, "columnspan": 3, "sticky": "w", "padx": 2, "pady": widget_pady},
             self.use_roads_check:         {"row": 7, "column": 0, "columnspan": 2, "sticky": "w", "padx": 2, "pady": widget_pady},
+            self.stream_mode_check:       {"row": 9, "column": 0, "columnspan": 2, "sticky": "w", "padx": 2, "pady": widget_pady},
             self.real_drive_time_button:  {"row": 7, "column": 2, "sticky": "ew", "padx": 2, "pady": widget_pady},
             self.route_time_label:        {"row": 8, "column": 0, "columnspan": 3, "sticky": "w", "padx": 2, "pady": widget_pady}
         }
@@ -1053,6 +1160,8 @@ class GPSSpooferGUI:
         self.action_buttons["remote_gen"].config(text=remote_gen_text, state=remote_gen_state, style=remote_gen_style)
         self.action_buttons["sim"].config(text=spoof_text, state=spoof_state, style=spoof_style)
         self.action_buttons["loop"].config(text=loop_text, state=loop_state, style=loop_style)
+        # Stream button mirrors Loop state
+        self.action_buttons["stream"].config(text="Stream", state=loop_state, style=loop_style)
         self.action_buttons["update_eph"].config(text=update_eph_text, state=update_eph_state, style=update_eph_style)
         self.action_buttons["to_sd"].config(text=transfer_sim_text, state=transfer_sim_state, style=transfer_sim_style)
         self.action_buttons["file->sd"].config(text=transfer_custom_text, state=transfer_custom_state, style=transfer_custom_style)
@@ -1082,6 +1191,11 @@ class GPSSpooferGUI:
         s_val = int(float(val_str))
         if hasattr(self, 'duration_label') and self.duration_label.winfo_exists(): self.duration_label.config(text=f"{s_val}s")
         self.config["duration"] = s_val; save_config(self.config)
+
+    def update_gen_cores(self, val_str):
+        s_val = int(float(val_str))
+        if hasattr(self, 'gen_cores_label') and self.gen_cores_label.winfo_exists(): self.gen_cores_label.config(text=f"{s_val}c")
+        self.config["gen_cores"] = s_val; save_config(self.config)
 
     def update_blast_duration(self, val_str):
         s_val = int(float(val_str))
@@ -1280,7 +1394,10 @@ class GPSSpooferGUI:
 
         self.add_to_terminal("Generating GPS signal file...")
 
-        args = [GPS_SDR_SIM_EXECUTABLE]; eph_to_use = self.config.get("ephemeris_file")
+        _cores = int(self.config.get("gen_cores", 1))
+        _use_exec = GPS_SDR_SIM_4CORE_EXECUTABLE if _cores > 1 else GPS_SDR_SIM_EXECUTABLE
+        import os as _os; _sim_env = _os.environ.copy(); _sim_env['GPSSIM_NTHREADS'] = str(_cores)
+        args = [_use_exec]; eph_to_use = self.config.get("ephemeris_file")
         if not eph_to_use or not os.path.exists(eph_to_use):
             if os.path.exists(LATEST_FILE_PATH):
                 with open(LATEST_FILE_PATH, "r") as f: eph_filename_from_record = f.read().strip()
@@ -1331,7 +1448,7 @@ class GPSSpooferGUI:
             self._prepare_playback_map_timeline(motion_file_for_sim, duration_for_sim_cmd_val)
         else: self.active_signal_duration_sec = duration_for_sim_cmd_val
         try:
-            self.gps_sim_proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, universal_newlines=True)
+            self.gps_sim_proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, universal_newlines=True, env=_sim_env)
             self._update_all_button_states()
 
             def stream_watcher_generate(identifier, stream, app_instance_ref, is_stderr_stream=False):
@@ -1833,7 +1950,108 @@ class GPSSpooferGUI:
         else:
             self._start_hackrf(loop=False, is_blast_phase_override=True)
 
+    def _loop_stream(self):
+        """Stream mode loop — pipes gps-sdr-sim stdout to hackrf_transfer continuously."""
+        if self.is_any_operation_active():
+            messagebox.showwarning("Busy", "Another operation is active. Please stop it first.")
+            return
+
+        _cores = int(self.config.get("gen_cores", 1))
+        _use_exec = GPS_SDR_SIM_4CORE_EXECUTABLE if _cores > 1 else GPS_SDR_SIM_EXECUTABLE
+        import os as _os; _sim_env = _os.environ.copy(); _sim_env['GPSSIM_NTHREADS'] = str(_cores)
+
+        eph_to_use = self.config.get("ephemeris_file")
+        if not eph_to_use or not os.path.exists(eph_to_use):
+            if os.path.exists(LATEST_FILE_PATH):
+                with open(LATEST_FILE_PATH, "r") as f: eph_to_use = os.path.join(EPHEMERIS_DIR, f.read().strip())
+            else:
+                messagebox.showerror("Error", "No valid ephemeris file."); return
+
+        current_loc_mode = self.location_mode_var.get()
+        duration_from_slider = self.duration_slider.get() if hasattr(self, 'duration_slider') else self.config.get("duration", 60)
+
+        def _build_args():
+            args = [_use_exec, "-e", eph_to_use]
+            if os.path.exists(LATEST_TIME_PATH):
+                with open(LATEST_TIME_PATH, "r") as tf:
+                    t_stamp = tf.read().strip()
+                if t_stamp: args.extend(["-t", t_stamp])
+            if "Static" in current_loc_mode:
+                lat, lon = self.latlon; alt = self.altitude if self.altitude is not None else DEFAULT_ALTITUDE_METERS
+                args.extend(["-l", f"{float(lat):.7f},{float(lon):.7f},{float(alt):.1f}"])
+                args.extend(["-d", str(duration_from_slider)])
+            elif "Route" in current_loc_mode:
+                start_alt = self.start_altitude if self.start_altitude is not None else DEFAULT_ALTITUDE_METERS
+                end_alt = self.end_altitude if self.end_altitude is not None else DEFAULT_ALTITUDE_METERS
+                motion_file = self._generate_route_motion_file(self.start_latlon, self.end_latlon, start_alt, end_alt, duration_from_slider, use_roads=self.use_roads_var.get())
+                if not motion_file: return None
+                args.extend(["-x", motion_file, "-d", str(min(duration_from_slider, 3600))])
+            else:
+                motion_file = self.motion_file_path_var.get()
+                if not motion_file or not os.path.exists(motion_file): return None
+                if "ECEF" in current_loc_mode: args.extend(["-u", motion_file])
+                elif "LLH" in current_loc_mode: args.extend(["-x", motion_file])
+                elif "NMEA" in current_loc_mode: args.extend(["-g", motion_file])
+                args.extend(["-d", str(min(duration_from_slider, 3600))])
+            args.extend(["-b", "8", "-o", "-"])
+            return args
+
+        gain = int(self.config.get("gain", 43))
+        freq_hz = int(self.config.get("frequency_hz", 1575420000))
+        hackrf_cmd = ["hackrf_transfer", "-t", "/dev/stdin", "-f", str(freq_hz),
+                      "-s", "2600000", "-a", "1", "-x", str(gain)]
+
+        self.add_to_terminal("Stream loop starting...")
+
+        def _run_loop():
+            import subprocess as _sp
+            hackrf_proc = None
+            try:
+                hackrf_proc = _sp.Popen(hackrf_cmd, stdin=_sp.PIPE, stdout=_sp.PIPE, stderr=_sp.STDOUT)
+                self.proc = hackrf_proc
+                self.running = True
+                self.master.after(0, self._update_all_button_states)
+                self.add_to_terminal(f"HackRF PID={hackrf_proc.pid}")
+                while self.running:
+                    args = _build_args()
+                    if not args:
+                        self.master.after(0, self.add_to_terminal, "Error building stream args.")
+                        break
+                    gen_proc = _sp.Popen(args, stdout=_sp.PIPE, stderr=_sp.PIPE, env=_sim_env)
+                    self.add_to_terminal(f"Gen PID={gen_proc.pid} streaming...")
+                    try:
+                        while self.running:
+                            chunk = gen_proc.stdout.read(65536)
+                            if not chunk: break
+                            hackrf_proc.stdin.write(chunk)
+                            hackrf_proc.stdin.flush()
+                    except BrokenPipeError:
+                        break
+                    gen_proc.stdout.close()
+                    gen_proc.wait()
+                    if not self.running: break
+                    self.add_to_terminal("Loop: restarting route...")
+            except Exception as e:
+                self.master.after(0, self.add_to_terminal, f"Stream loop error: {e}")
+            finally:
+                if hackrf_proc:
+                    try: hackrf_proc.stdin.close()
+                    except: pass
+                    try: hackrf_proc.kill()
+                    except: pass
+                    hackrf_proc.wait()
+                self.running = False
+                self.proc = None
+                self.master.after(0, self._update_all_button_states)
+                self.master.after(0, self.add_to_terminal, "Stream loop ended.")
+
+        import threading
+        threading.Thread(target=_run_loop, daemon=True).start()
+
     def loop_signal(self):
+        if self.stream_mode.get():
+            self._loop_stream()
+            return
         if self.glo_jam_enabled.get():
             self._run_glo_jam_then_hackrf(loop=True)
         else:
