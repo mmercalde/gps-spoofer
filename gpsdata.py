@@ -1,7 +1,7 @@
 import os, gzip, shutil, requests, subprocess, sys, time
 from datetime import datetime, timedelta
 
-TOKEN = "eyJ0eXAiOiJKV1QiLCJvcmlnaW4iOiJFYXJ0aGRhdGEgTG9naW4iLCJzaWciOiJlZGxqd3RwdWJrZXlfb3BzIiwiYWxnIjoiUlMyNTYifQ.eyJ0eXBlIjoiVXNlciIsInVpZCI6ImJhamFjYWxpIiwiZXhwIjoxNzc3NDc4ODcxLCJpYXQiOjE3NzIyOTQ4NzEsImlzcyI6Imh0dHBzOi8vdXJzLmVhcnRoZGF0YS5uYXNhLmdvdiIsImlkZW50aXR5X3Byb3ZpZGVyIjoiZWRsX29wcyIsImFjciI6ImVkbCIsImFzc3VyYW5jZV9sZXZlbCI6M30.tFCR-tqISNJxmM8Pd0tM6BQY38bQbatufsRNCD7x98G15uoZp0JTciI3YgH5A6eHE9Kq08i0QW5DmvTi3pZ4AD8bD4L6NB6RZaSHzsLzHexN4Y8fpXZV6nfkJNGvWfUNZxAdwSByj69OesqTqcDPyRF_4eJb-BmrkTMQqHpwyq7KmCDsZWxyAzw8GnONQnAHO_3z5KXk_dcz2pEnXD9rzXzKunBvgf7j5aK7WCJhOpbB1bL5oejvOORGFrekWwTJIWuG_D4a_YUyt8TRqMFlSCW0eM7TZ4qqBFTr7hEbQn9CrnOkP_Lk5kn0ss4W4RhFPxnJwO-t52l2ECoFluwGbA"
+TOKEN = "eyJ0eXAiOiJKV1QiLCJvcmlnaW4iOiJFYXJ0aGRhdGEgTG9naW4iLCJzaWciOiJlZGxqd3RwdWJrZXlfb3BzIiwiYWxnIjoiUlMyNTYifQ.eyJ0eXBlIjoiVXNlciIsInVpZCI6ImJhamFjYWxpIiwiZXhwIjoxNzgyNDI4MzgzLCJpYXQiOjE3NzcyNDQzODMsImlzcyI6Imh0dHBzOi8vdXJzLmVhcnRoZGF0YS5uYXNhLmdvdiIsImlkZW50aXR5X3Byb3ZpZGVyIjoiZWRsX29wcyIsImFjciI6ImVkbCIsImFzc3VyYW5jZV9sZXZlbCI6M30.Dbxn5WjOSju9UPPSJL9a0TG0aMQtQSCw6hfa7JHigrmTEsB41REOrCSNuc4aJQYOEYEOyP0ZwVK7xRqIw2DS45tU4p_GJtHui2oMwo5cNdfKKvlalokU3TKuJkkN76eUl0n4stGn0k3MNqrxjSXsYf44DQTHfpMH76n1ofyDUuHW9pVjud92Qtv7hVNwqBlMgxITFljLGxeYQEib3AuyUCLZoctd1N3QdKkL6gt9dDJ9eITYMPIc6cdHSlJm5a3A0BqrPo_XbnpZ6zi2VDyVhePCOKtCiVFHuU_psl0c_r6BNmHz3qCsrBd-aLyODhmpItGOiq77OsjE44AP2967Zw"
 
 DIR  = os.path.expanduser("~/gps_spoofer/ephemeris")
 L_T  = os.path.join(DIR, "latest_time.txt")
@@ -130,13 +130,7 @@ def download_ephemeris():
                     for line in f:
                         if line.strip() and line[0].isdigit():
                             p = line.split()
-                            # Derive date from filename (authoritative) not RINEX data line
-                            # brdc0750.26n -> day 075, year 2026 -> March 16
-                            import datetime as _dt
-                            _doy = int(os.path.basename(out)[4:7])
-                            _yr  = 2000 + int(os.path.basename(out)[7:9])
-                            _d   = _dt.datetime(_yr, 1, 1) + _dt.timedelta(days=_doy - 1)
-                            ts = f"{_d.year}/{_d.month:02d}/{_d.day:02d},00:00:00"
+                            ts = f"20{int(p[1]):02d}/{int(p[2]):02d}/{int(p[3]):02d},{int(p[4]):02d}:{int(p[5]):02d}:00"
                             with open(L_T, "w") as tf: tf.write(ts + "\n")
                             with open(L_F, "w") as ff: ff.write(out + "\n")
                             with open(L_DL, "w") as df:
