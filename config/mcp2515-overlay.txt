@@ -1,0 +1,6 @@
+# Append to /boot/firmware/config.txt for PiCAN2 Duo, then reboot.
+# VERIFY against your board rev: oscillator may be 12000000 (not 16000000),
+# and the INT GPIOs may differ. Wrong values = no CAN bus.
+dtparam=spi=on
+dtoverlay=mcp2515-can0,oscillator=16000000,interrupt=25
+dtoverlay=mcp2515-can1,oscillator=16000000,interrupt=24
