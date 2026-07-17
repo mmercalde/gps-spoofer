@@ -108,25 +108,52 @@ typedef struct {
     unsigned long dwrd[N_DWRD];
 } ChanSnap;
 
-/* Advance one snapshot by n samples — identical logic to the original loop */
+/* Advance one snapshot by n samples — closed-form O(1) equivalent of the
+ * original per-sample loop. Both accumulators step by a constant per sample
+ * (carrier by carr_phasestep, code by f_code*delt < 1 chip), so the end state
+ * is a direct calculation instead of n iterations. This is what makes the
+ * per-thread pre-roll cheap; without it the pre-roll runs serially and cancels
+ * out the multi-core speedup (see docs/four_core_efficiency_review.md).
+ *
+ * Note: computing n*step in one multiply rounds slightly differently than n
+ * sequential adds, so code_phase may differ by <1 LSB at a chunk seam — a
+ * sub-sample effect, negligible for signal generation. */
 static void snap_advance(ChanSnap *c, int n, double delt)
 {
-    for (int s = 0; s < n; s++) {
-        c->code_phase += c->f_code * delt;
-        if (c->code_phase >= CA_SEQ_LEN) {
-            c->code_phase -= CA_SEQ_LEN;
-            if (++c->icode >= 20) {
-                c->icode = 0;
-                if (++c->ibit >= 30) {
-                    c->ibit = 0;
-                    if (++c->iword >= N_DWRD) c->iword = N_DWRD - 1;
-                }
-                c->dataBit = (int)((c->dwrd[c->iword] >> (29 - c->ibit)) & 1UL) * 2 - 1;
+    if (n <= 0)
+        return;
+
+    /* Carrier NCO: exact — unsigned 32-bit wrap is the intended modulo. */
+    c->carr_phase += (unsigned int)c->carr_phasestep * (unsigned int)n;
+
+    /* Code phase: total advance and number of 1023-chip sequence wraps. */
+    double total = c->code_phase + (double)n * (c->f_code * delt);
+    long   wraps = (long)(total / CA_SEQ_LEN);          /* floor (total > 0) */
+    c->code_phase = total - (double)wraps * CA_SEQ_LEN;
+
+    if (wraps > 0) {
+        /* Each wrap = one C/A code period: advance icode, carrying into the
+         * data-bit (every 20) and nav word (every 30 bits) counters. */
+        long total_icode = (long)c->icode + wraps;
+        long bit_carry   = total_icode / 20;
+        c->icode         = (int)(total_icode % 20);
+
+        if (bit_carry > 0) {
+            long total_ibit = (long)c->ibit + bit_carry;
+            long word_carry = total_ibit / 30;
+            c->ibit         = (int)(total_ibit % 30);
+            if (word_carry > 0) {
+                c->iword += (int)word_carry;
+                if (c->iword >= N_DWRD)
+                    c->iword = N_DWRD - 1;
             }
+            /* dataBit is refreshed on every icode rollover; the final value
+             * comes from the last one, i.e. the final ibit/iword. */
+            c->dataBit = (int)((c->dwrd[c->iword] >> (29 - c->ibit)) & 1UL) * 2 - 1;
         }
-        c->codeCA     = c->ca[(int)c->code_phase] * 2 - 1;
-        c->carr_phase += (unsigned int)c->carr_phasestep;
     }
+
+    c->codeCA = c->ca[(int)c->code_phase] * 2 - 1;
 }
 
 /* Generate one chunk of IQ samples from a private channel snapshot array */
@@ -2350,7 +2377,7 @@ int main(int argc, char *argv[])
 
 	for (iumd=1; iumd<numd; iumd++)
 	{
-		#pragma omp parallel for schedule(dynamic) private(i)
+		#pragma omp parallel for schedule(static) private(i, sv, path_loss, ant_gain, ibs)
 		for (i=0; i<MAX_CHAN; i++)
 		{
 			if (chan[i].prn>0)
