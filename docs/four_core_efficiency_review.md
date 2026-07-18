@@ -1,10 +1,11 @@
 # Four-core (`gpssim_pi5_configurable.c`) efficiency review
 
-**Status:** fixes applied to `gpssim_pi5_configurable.c` and **bench-validated on the
-pi5b field unit** (software side — see "On-hardware bench results" below). Binary built
-as `~/gps-sdr-sim/gps-sdr-sim-4core-fixed`; production binaries and the Python are
-unchanged. Still pending: live RF lock test (HackRF transmit + receiver lock) and
-go-live (swap binary + restore the Python `gen_cores` control).
+**Status:** fixes applied to `gpssim_pi5_configurable.c` and **fully validated on the
+pi5b field unit** — software bench (below) **and a live RF lock test** (2026-07-17):
+transmitted via HackRF at 1575.42 MHz over the shielded path, receiver locked, signal
+confirmed valid; `throttled=0x0` (no undervoltage) throughout transmit. Binary built as
+`~/gps-sdr-sim/gps-sdr-sim-4core-fixed`; production binaries and the Python are still
+unchanged. Remaining: go-live (swap binary + restore the Python `gen_cores` control).
 **Context:** the four-core generation path drew heavily on the field Pi5's marginal
 power supply while delivering little speedup. This documents why, and what changed.
 
@@ -90,6 +91,13 @@ seam concern did not surface), and deterministic across reruns. The old binary's
 
 **Power/thermal:** `throttled=0x0` throughout (no undervoltage); temp 56.5 -> 65.9 C.
 The power win is race-to-idle: cores draw full power for ~0.8 s instead of ~5.2 s.
+
+**Live RF lock test (2026-07-17):** generated a 300 s static scenario (same location)
+with `gps-sdr-sim-4core-fixed` (8.8 s, 1.56 GB) and transmitted via `hackrf_transfer`
+`-f 1575420000 -s 2600000 -a 1 -x 15` over the shielded path. Receiver acquired and
+locked; operator confirmed the signal valid. Transmit held ~5.2 MiB/s at -12.7 dBfs,
+`throttled=0x0`, ~55 C for the duration — no undervoltage under the real generate+TX
+load. Device released cleanly on stop.
 
 ## Not yet changed (optional follow-ups)
 
