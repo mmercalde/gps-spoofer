@@ -1,7 +1,10 @@
 # Four-core (`gpssim_pi5_configurable.c`) efficiency review
 
-**Status:** fixes applied to `gpssim_pi5_configurable.c` (source only; the binary must
-be recompiled and bench-tested on the Pi5 before field use).
+**Status:** fixes applied to `gpssim_pi5_configurable.c` and **bench-validated on the
+pi5b field unit** (software side — see "On-hardware bench results" below). Binary built
+as `~/gps-sdr-sim/gps-sdr-sim-4core-fixed`; production binaries and the Python are
+unchanged. Still pending: live RF lock test (HackRF transmit + receiver lock) and
+go-live (swap binary + restore the Python `gen_cores` control).
 **Context:** the four-core generation path drew heavily on the field Pi5's marginal
 power supply while delivering little speedup. This documents why, and what changed.
 
@@ -56,6 +59,37 @@ wrong channel gains (only with `path_loss_enable == TRUE`, the default). This is
 likely contributor to the path's "finicky"/unreliable reputation. Fixed by adding those
 scalars to the `private(...)` clause (and switching the small fixed loop to
 `schedule(static)`).
+
+## On-hardware bench results (pi5b, 2026-07-17)
+
+Built with the original flags (`gcc gpssim_pi5_configurable.c -O3 -mcpu=cortex-a76
+-fopenmp -D_FILE_OFFSET_BITS=64 -DUSER_MOTION_SIZE=36000 -I~/gps-sdr-sim/src -lm`).
+Test scenario: static `32.924986,-117.123176,100`, ephemeris `brdc1980.26n`,
+`-t 2026/07/17,00:00:00 -d 30 -b 8` @ 2.6 MHz (155,480,000-byte output).
+
+**Correctness — byte-exact vs. the trusted single-core binary:**
+
+| Binary                          | vs single-core (`md5`) | Bytes differing        |
+|---------------------------------|------------------------|------------------------|
+| New 4-core, `GPSSIM_NTHREADS`=1/3/4 | identical           | **0 / 155,480,000**    |
+| Old 4-core (pre-fix)            | mismatch               | 1 / 155,480,000 (race) |
+
+New 4-core output is bit-identical to single-core at every thread count (the <1 LSB
+seam concern did not surface), and deterministic across reruns. The old binary's
+1-byte difference is the pseudorange race (Fix 2) producing one wrong gain sample.
+
+**Speed (30 s scenario):**
+
+| Version                        | Time  | Note                                   |
+|--------------------------------|-------|----------------------------------------|
+| Single-core (current prod)     | 4.0 s | baseline                               |
+| **Old 4-core (pre-fix)**       | 5.2 s | *slower than single-core* — full 4-core power, negative benefit |
+| **New 4-core, 4 threads**      | 0.8 s | ~5x vs single-core, ~6.5x vs old 4-core |
+| New 4-core, 3 threads          | 1.1 s | ~3.6x vs single-core                   |
+| New 4-core, 1 thread           | 3.1 s | gen refactor alone beats old single-core |
+
+**Power/thermal:** `throttled=0x0` throughout (no undervoltage); temp 56.5 -> 65.9 C.
+The power win is race-to-idle: cores draw full power for ~0.8 s instead of ~5.2 s.
 
 ## Not yet changed (optional follow-ups)
 
