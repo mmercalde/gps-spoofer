@@ -86,6 +86,7 @@ class GPSSpooferGUI:
         self._last_map_fetch = 0.0
         self._map_loading = False
         self._map_fetch_count = 0
+        self._last_map_fail = 0.0
         self._poll_after = None
         self._clock_after = None
         self._buttons = {}
@@ -578,6 +579,10 @@ class GPSSpooferGUI:
             return  # canvas not laid out yet; the 1 s poll will retry
         key = (round(lat, 5), round(lon, 5), zoom, mtype, w, h)
         now = time.time()
+        # Back off after a failed fetch (Google quota/403): retry at most once
+        # every 5 minutes rather than every poll.
+        if now - self._last_map_fail < 300.0:
+            return
         running = s.get("running")
         # Cost-safe: moving map is throttled to one tile per 30 s REGARDLESS
         # of how fast the playback position changes; idle fetches only on change.
@@ -623,6 +628,9 @@ class GPSSpooferGUI:
     def _show_map(self, data):
         self._map_loading = False
         if not data or not HAS_PIL:
+            # Fetch failed (e.g. Google 403 / quota).  Back off before retrying
+            # so we don't hammer the API (otherwise the counter ticks 1/sec).
+            self._last_map_fail = time.time()
             self._clear_map()
             return
         try:
