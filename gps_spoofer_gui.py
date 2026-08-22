@@ -85,6 +85,7 @@ class GPSSpooferGUI:
         self._last_map_key = None
         self._last_map_fetch = 0.0
         self._map_loading = False
+        self._map_fetch_count = 0
         self._poll_after = None
         self._clock_after = None
         self._buttons = {}
@@ -415,6 +416,8 @@ class GPSSpooferGUI:
         bar.grid_propagate(False)
         self._file_status = tk.Label(bar, text="", bg=SURFACE, font=SMALL_FONT)
         self._file_status.pack(side="left", padx=8)
+        self._map_tiles_label = tk.Label(bar, text="map: 0 tiles", bg=SURFACE, fg=MUTED, font=SMALL_FONT)
+        self._map_tiles_label.pack(side="left", padx=20)
         self._eph_status = tk.Label(bar, text="", bg=SURFACE, font=SMALL_FONT)
         self._eph_status.pack(side="right", padx=8)
 
@@ -507,6 +510,8 @@ class GPSSpooferGUI:
         else:
             self._file_status.configure(text="gpssim.c8 — none (GENERATE first)", fg=MUTED2)
 
+        self._map_tiles_label.configure(text=f"map: {self._map_fetch_count} tiles")
+
         eph = self._ephemeris_snapshot()
         if eph:
             age = eph["age_hours"]
@@ -561,7 +566,10 @@ class GPSSpooferGUI:
         zoom = core.config.get("map_zoom", 14)
         mtype = core.config.get("map_type", "roadmap")
         if lat is None or lon is None:
-            if self._last_map_key is not None:
+            # During an active transmit (e.g. the initial blast phase before
+            # playback starts), keep the last good tile instead of blanking to
+            # "no location selected".
+            if self._last_map_key is not None and not s.get("running"):
                 self._clear_map()
             return
         w = self.map_canvas.winfo_width()
@@ -571,8 +579,12 @@ class GPSSpooferGUI:
         key = (round(lat, 5), round(lon, 5), zoom, mtype, w, h)
         now = time.time()
         running = s.get("running")
-        # Cost-safe: at most one map tile per 30 s while moving; static = one tile.
-        need = (key != self._last_map_key) or (running and (now - self._last_map_fetch > 30.0))
+        # Cost-safe: moving map is throttled to one tile per 30 s REGARDLESS
+        # of how fast the playback position changes; idle fetches only on change.
+        if running:
+            need = (now - self._last_map_fetch > 30.0)
+        else:
+            need = (key != self._last_map_key)
         if not need or self._map_loading:
             return
         self._last_map_key = key
@@ -585,13 +597,18 @@ class GPSSpooferGUI:
             return pos[0], pos[1]
         if s.get("latitude") is not None and s.get("longitude") is not None:
             return s["latitude"], s["longitude"]
-        sl = s.get("start_latlon") or [None, None]
-        if sl[0] is not None:
-            return sl[0], sl[1]
+        for key in ("start_latlon", "end_latlon"):
+            ll = s.get(key) or [None, None]
+            if ll[0] is not None:
+                return ll[0], ll[1]
+        mp = s.get("map_playback_latlon")
+        if mp and mp[0] is not None:
+            return mp[0], mp[1]
         return None, None
 
     def _fetch_map(self, lat, lon, zoom, mtype, w, h):
         api_key = core.config.get("Maps_api_key")
+        self._map_fetch_count += 1
         self._map_loading = True
 
         def work():

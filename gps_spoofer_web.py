@@ -41,6 +41,7 @@ def _no_store(resp):
 # Remote-generation download progress (updated by core callback)
 # ---------------------------------------------------------------------------
 _download_progress = [0, 0]  # [downloaded, total]
+_map_tiles_fetched = [0]     # Google Static Maps requests this session (cost visibility)
 
 
 def _on_download_progress(downloaded, total):
@@ -483,7 +484,7 @@ HTML = r"""
     <span class="brand-mark"></span>
     <div class="brand-text">
       <span class="brand-title">GPS-SIM</span>
-      <span class="brand-sub">Field control · Pi5b + HackRF · v2.7</span>
+      <span class="brand-sub">Field control · Pi5b + HackRF · v2.10</span>
     </div>
   </div>
   <div class="appbar-right">
@@ -610,6 +611,7 @@ HTML = r"""
     <header class="card-header">
       <span class="card-title">Map</span>
       <span class="coords" id="map-coords"></span>
+      <span class="coords" id="map-tiles">0 tiles</span>
     </header>
     <div class="map-wrap">
       <img id="map-img" alt="Map" hidden>
@@ -706,7 +708,7 @@ let pollTimer = null;
 let txStartedAt = null;    // local fallback for elapsed time
 let wasRunning = false;
 let mapZoom = 14, mapType = 'roadmap', mapVisible = true, mapUserHidden = false;
-let mapLat = null, mapLon = null, mapTimer = null, lastMapKey = '';
+let mapLat = null, mapLon = null, mapTimer = null, lastMapKey = '', lastMapFetchAt = 0;
 
 // ── API ────────────────────────────────────────────────────────────────────
 async function apiPost(url, data) {
@@ -846,6 +848,7 @@ function updateUI(s) {
   else { fs.className = 'file-status'; fs.textContent = 'gpssim.c8 not found — run GENERATE first.'; }
   renderEph(s.ephemeris);
   renderRf(s);
+  const mt = $('map-tiles'); if (mt) mt.textContent = (s.map_tiles_fetched || 0) + ' tiles';
 
   // config controls (sync unless the user is actively editing that control)
   syncSlider('gain',     'gain-val',      s.gain,                     v => v + ' dB');
@@ -1034,6 +1037,8 @@ function updateMap(s, prevRunning) {
   // choose center: moving dot while transmitting, else the target
   if (s.running && s.playback_lat != null) { mapLat = s.playback_lat; mapLon = s.playback_lon; }
   else if (s.latitude != null && s.longitude != null) { mapLat = s.latitude; mapLon = s.longitude; }
+  else if (s.start_latlon && s.start_latlon[0] != null) { mapLat = s.start_latlon[0]; mapLon = s.start_latlon[1]; }
+  else if (s.end_latlon && s.end_latlon[0] != null) { mapLat = s.end_latlon[0]; mapLon = s.end_latlon[1]; }
   else if (s.map_playback_latlon && s.map_playback_latlon[0] != null) { mapLat = s.map_playback_latlon[0]; mapLon = s.map_playback_latlon[1]; }
 
   const hasCoords = mapLat != null && mapLon != null;
@@ -1054,7 +1059,7 @@ function updateMap(s, prevRunning) {
   if (mapVisible && hasCoords) {
     $('map-coords').textContent = fmtCoord(mapLat, mapLon);
     refreshMap();
-  } else if (mapVisible) {
+  } else if (mapVisible && !s.running) {
     $('map-coords').textContent = '';
     $('map-img').hidden = true;
     $('map-empty').hidden = false;
@@ -1068,6 +1073,10 @@ function refreshMap() {
   const h = Math.round(w * 0.55);
   const key = mapLat.toFixed(5) + ',' + mapLon.toFixed(5) + ',' + mapZoom + ',' + mapType + ',' + w;
   if (key === lastMapKey) return;
+  // Throttle the moving map to one tile per 30 s (prevents quota burn).
+  const now = Date.now();
+  if (S && S.running && (now - lastMapFetchAt < 30000)) return;
+  lastMapFetchAt = now;
   lastMapKey = key;
   $('map-img').hidden = false;
   $('map-empty').hidden = true;
@@ -1218,6 +1227,7 @@ def api_status():
     # Read-only ephemeris cache snapshot (web-layer enrichment; no core edits)
     s['ephemeris'] = _ephemeris_info()
     s['hackrf_present'] = _hackrf_present()
+    s['map_tiles_fetched'] = _map_tiles_fetched[0]
 
     return jsonify(s)
 
@@ -1317,6 +1327,7 @@ def api_map_image():
     if lat is None or lon is None:
         return '', 404
     api_key = core.config.get('Maps_api_key')
+    _map_tiles_fetched[0] += 1
     data = download_static_map(lat, lon, zoom, w, h, maptype=mtype, api_key=api_key)
     if not data:
         return '', 404
