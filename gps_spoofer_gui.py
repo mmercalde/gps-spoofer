@@ -311,7 +311,7 @@ class GPSSpooferGUI:
         tk.Label(row, text="Addr", bg=BG, fg=MUTED, font=SMALL_FONT, width=5, anchor="w").pack(side="left")
         ttk.Entry(row, textvariable=self._addr_var).pack(side="left", fill="x", expand=True)
         self._mk_button(row, "LOOKUP", self._do_lookup, INFO).pack(side="left", padx=(4, 0))
-        self._static_info = tk.Label(self._static_frame, text="—", bg=BG, fg=INFO, font=SMALL_FONT, anchor="w")
+        self._static_info = tk.Label(self._static_frame, text="Enter address, tap LOOKUP", bg=BG, fg=MUTED, font=LABEL_FONT, anchor="w")
         self._static_info.pack(fill="x", pady=(0, 4))
 
         # route
@@ -322,17 +322,19 @@ class GPSSpooferGUI:
         tk.Label(r1, text="Start", bg=BG, fg=MUTED, font=SMALL_FONT, width=5, anchor="w").pack(side="left")
         ttk.Entry(r1, textvariable=self._start_var).pack(side="left", fill="x", expand=True)
         self._mk_button(r1, "GO", self._do_lookup_start, INFO).pack(side="left", padx=(4, 0))
+        self._start_info = tk.Label(self._route_frame, text="", bg=BG, fg=MUTED, font=LABEL_FONT, anchor="w")
+        self._start_info.pack(fill="x")
         r2 = self._mk_frame(self._route_frame); r2.pack(fill="x", pady=2)
         tk.Label(r2, text="End", bg=BG, fg=MUTED, font=SMALL_FONT, width=5, anchor="w").pack(side="left")
         ttk.Entry(r2, textvariable=self._end_var).pack(side="left", fill="x", expand=True)
         self._mk_button(r2, "GO", self._do_lookup_end, INFO).pack(side="left", padx=(4, 0))
-        self._route_info = tk.Label(self._route_frame, text="—", bg=BG, fg=INFO, font=SMALL_FONT, anchor="w")
-        self._route_info.pack(fill="x")
+        self._end_info = tk.Label(self._route_frame, text="", bg=BG, fg=MUTED, font=LABEL_FONT, anchor="w")
+        self._end_info.pack(fill="x")
         rr = self._mk_frame(self._route_frame); rr.pack(fill="x", pady=2)
         self._roads_btn = self._mk_button(rr, "ROADS ON", self._toggle_use_roads, GO)
         self._roads_btn.pack(side="left", fill="x", expand=True)
         self._mk_button(rr, "DRIVE TIME", self._real_drive_time, GO).pack(side="left", fill="x", expand=True, padx=(4, 0))
-        self._route_time = tk.Label(self._route_frame, text="", bg=BG, fg=MUTED, font=SMALL_FONT, anchor="w")
+        self._route_time = tk.Label(self._route_frame, text="", bg=BG, fg=MUTED, font=LABEL_FONT, anchor="w")
         self._route_time.pack(fill="x", pady=(0, 4))
         self._roads_buttons.append(self._roads_btn)
 
@@ -343,7 +345,7 @@ class GPSSpooferGUI:
         tk.Label(mrow, text="CSV", bg=BG, fg=MUTED, font=SMALL_FONT, width=5, anchor="w").pack(side="left")
         ttk.Entry(mrow, textvariable=self._motion_var).pack(side="left", fill="x", expand=True)
         self._mk_button(mrow, "SET", self._set_motion, INFO).pack(side="left", padx=(4, 0))
-        self._motion_info = tk.Label(self._motion_frame, text="", bg=BG, fg=MUTED, font=SMALL_FONT, anchor="w")
+        self._motion_info = tk.Label(self._motion_frame, text="", bg=BG, fg=MUTED, font=LABEL_FONT, anchor="w")
         self._motion_info.pack(fill="x", pady=(0, 4))
 
         self._show_mode_frame(core.config.get("location_mode", "Static (Address Lookup)"))
@@ -700,23 +702,32 @@ class GPSSpooferGUI:
         self._run_async(lambda: self.core.lookup_static_address(addr), self._on_lookup_done)
 
     def _do_lookup_start(self):
-        self._run_async(lambda: self.core.lookup_start_address(self._start_var.get().strip()), self._on_route_done)
+        self._start_info.configure(text="Looking up…", fg=MUTED)
+        self._run_async(lambda: self.core.lookup_start_address(self._start_var.get().strip()), self._on_start_done)
 
     def _do_lookup_end(self):
-        self._run_async(lambda: self.core.lookup_end_address(self._end_var.get().strip()), self._on_route_done)
+        self._end_info.configure(text="Looking up…", fg=MUTED)
+        self._run_async(lambda: self.core.lookup_end_address(self._end_var.get().strip()), self._on_end_done)
 
     def _on_lookup_done(self, r):
         if r and r.get("ok"):
-            self._static_info.configure(text=f"{r['lat']:.4f}, {r['lon']:.4f}" + (f" · {r['altitude']:.1f}m" if r.get("altitude") else ""), fg=GO)
+            self._static_info.configure(text=f"✓ Found: {r['lat']:.4f}, {r['lon']:.4f}" + (f" · {r['altitude']:.1f}m" if r.get("altitude") else ""), fg=GO)
         else:
-            self._static_info.configure(text="Lookup failed", fg=DANGER)
+            self._static_info.configure(text="✗ Lookup failed — check address", fg=DANGER)
         self._render(self.core.get_status_dict())
 
-    def _on_route_done(self, r):
+    def _on_start_done(self, r):
         if r and r.get("ok"):
-            self._route_info.configure(text="Route endpoints set", fg=GO)
+            self._start_info.configure(text=f"✓ Start: {r['lat']:.4f}, {r['lon']:.4f}" + (f" · {r['altitude']:.1f}m" if r.get("altitude") else ""), fg=GO)
         else:
-            self._route_info.configure(text="Lookup failed", fg=DANGER)
+            self._start_info.configure(text="✗ Start not found", fg=DANGER)
+        self._render(self.core.get_status_dict())
+
+    def _on_end_done(self, r):
+        if r and r.get("ok"):
+            self._end_info.configure(text=f"✓ End: {r['lat']:.4f}, {r['lon']:.4f}" + (f" · {r['altitude']:.1f}m" if r.get("altitude") else ""), fg=GO)
+        else:
+            self._end_info.configure(text="✗ End not found", fg=DANGER)
         self._render(self.core.get_status_dict())
 
     def _set_motion(self):
@@ -724,7 +735,7 @@ class GPSSpooferGUI:
         core.config["motion_file_path"] = path
         from gps_spoofer_core import save_config
         save_config(core.config)
-        self._motion_info.configure(text=("File set" if os.path.exists(path) else "File NOT found"), fg=(GO if os.path.exists(path) else DANGER))
+        self._motion_info.configure(text=("✓ File set" if os.path.exists(path) else "✗ File NOT found"), fg=(GO if os.path.exists(path) else DANGER))
         self._render(self.core.get_status_dict())
 
     def _toggle_use_roads(self):
