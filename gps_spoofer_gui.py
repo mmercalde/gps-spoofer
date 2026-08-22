@@ -209,6 +209,7 @@ class GPSSpooferGUI:
         left.grid_propagate(False)
 
         self._build_target(left)      # location (mode + address + route/motion)
+        self._build_actions(left)     # generate / transmit / loop / stop
         self._build_running(left)     # gain + duration
 
         right = tk.Frame(parent, bg=BG)
@@ -226,9 +227,7 @@ class GPSSpooferGUI:
         left = tk.Frame(parent, bg=BG)
         left.grid(row=0, column=0, sticky="nsew", padx=(8, 4), pady=6)
         left.columnconfigure(0, weight=1)
-        left.rowconfigure(0, weight=0)   # actions (natural size)
-        left.rowconfigure(1, weight=1)   # log (expand)
-        self._build_actions(left)
+        left.rowconfigure(0, weight=1)
         self._build_log(left)
 
         right = tk.Frame(parent, bg=BG)
@@ -239,16 +238,18 @@ class GPSSpooferGUI:
     # ── actions ─────────────────────────────────────────────────────────────
     def _build_actions(self, parent):
         act = ttk.Labelframe(parent, text="ACTIONS")
-        act.grid(row=0, column=0, sticky="new", pady=(0, 6))
-        act.columnconfigure(0, weight=1)
-        for key, txt, cmd, color in [
+        act.pack(fill="x", pady=(0, 6))
+        for i, (key, txt, cmd, color) in enumerate([
             ("gen", "GENERATE", self._do_generate, INFO),
             ("sim", "TRANSMIT", self._do_sim, GO),
             ("loop", "LOOP", self._do_loop, GO),
             ("stop", "STOP", self._do_stop, DANGER),
-        ]:
-            self._buttons[key] = self._mk_button(act, txt, cmd, color)
-            self._buttons[key].pack(fill="x", padx=6, pady=3)
+        ]):
+            r, c = divmod(i, 2)
+            b = self._mk_button(act, txt, cmd, color)
+            b.grid(row=r, column=c, sticky="ew", padx=3, pady=3)
+            act.columnconfigure(c, weight=1)
+            self._buttons[key] = b
 
     # ── params (page 2 right) ───────────────────────────────────────────────
     def _build_params(self, parent):
@@ -273,6 +274,7 @@ class GPSSpooferGUI:
             ("remote", "REMOTE GENERATE", self._do_remote, REMOTE),
             ("eph", "UPDATE EPHEMERIS", self._do_eph, WARN),
             ("sd", "COPY .c8 → SD", self._do_sd, MUTED),
+            ("quit", "QUIT", self._do_quit, DANGER),
         ]:
             self._buttons[key] = self._mk_button(maint, txt, cmd, color)
             self._buttons[key].pack(fill="x", padx=6, pady=3)
@@ -398,10 +400,10 @@ class GPSSpooferGUI:
     # ── log ─────────────────────────────────────────────────────────────────
     def _build_log(self, parent):
         f = ttk.Labelframe(parent, text="OUTPUT LOG")
-        f.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+        f.grid(row=0, column=0, sticky="nsew")
         f.columnconfigure(0, weight=1)
         f.rowconfigure(0, weight=1)
-        self._terminal = tk.Text(f, bg="#06080c", fg="#7e94a8", font=MONO_FONT, wrap="word", height=6,
+        self._terminal = tk.Text(f, bg="#06080c", fg="#7e94a8", font=MONO_FONT, wrap="word", height=12,
                                  relief="flat", bd=0, padx=6, pady=2, state="disabled", highlightthickness=0)
         self._terminal.grid(row=0, column=0, sticky="nsew")
         clear = self._mk_button(f, "CLEAR", self._clear_log, MUTED)
@@ -680,6 +682,14 @@ class GPSSpooferGUI:
 
     def _do_sd(self):
         self._run(self.core.transfer_sim_to_sd)
+
+    def _do_quit(self):
+        """Stop all RF and close the app."""
+        try:
+            self.core.stop_all()
+        except Exception:
+            pass
+        self.root.destroy()
 
     def _run(self, fn):
         try:
