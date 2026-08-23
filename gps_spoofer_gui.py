@@ -59,6 +59,8 @@ BTN_FONT   = ("Helvetica", 10, "bold")
 LABEL_FONT = ("Helvetica", 9)
 SMALL_FONT = ("Helvetica", 8)
 MONO_FONT  = ("Courier", 9)
+ENTRY_FONT = ("Helvetica", 11)
+LOG_FONT   = ("Courier", 11)
 
 W, H = 800, 480
 
@@ -135,7 +137,7 @@ class GPSSpooferGUI:
         style.configure("TLabel", background=BG, foreground=TEXT)
         style.configure("TLabelframe", background=BG, foreground=MUTED, bordercolor=BORDER, relief="flat")
         style.configure("TLabelframe.Label", background=BG, foreground=MUTED, font=SMALL_FONT)
-        style.configure("TEntry", fieldbackground=SURFACE2, foreground=TEXT, insertcolor=TEXT)
+        style.configure("TEntry", fieldbackground=SURFACE2, foreground=TEXT, insertcolor=TEXT, font=ENTRY_FONT)
         style.configure("TCheckbutton", background=BG, foreground=TEXT, font=LABEL_FONT)
 
     # ── helpers ─────────────────────────────────────────────────────────────
@@ -640,7 +642,7 @@ class GPSSpooferGUI:
         f.grid(row=0, column=0, sticky="nsew")
         f.columnconfigure(0, weight=1)
         f.rowconfigure(0, weight=1)
-        self._terminal = tk.Text(f, bg="#06080c", fg="#7e94a8", font=MONO_FONT, wrap="word", height=12, width=52,
+        self._terminal = tk.Text(f, bg="#06080c", fg="#7e94a8", font=LOG_FONT, wrap="word", height=12, width=42,
                                  relief="flat", bd=0, padx=6, pady=2, state="disabled", highlightthickness=0)
         self._terminal.grid(row=0, column=0, sticky="nsew")
         clear = self._mk_button(f, "CLEAR", self._clear_log, MUTED)
