@@ -1,0 +1,11 @@
+[Unit]
+Description=Re-initialize Waveshare touch controller (edt-ft5506)
+After=lightdm.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/gps-touch-rebind.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target

@@ -1,0 +1,4 @@
+# Waveshare 4.3" DSI touchscreen - re-initialize the touch controller on hotplug.
+# The controller (FocalTech edt-ft5506 / FT5x06) can come up in a bad state
+# (intermittent touch). The rebind forces a clean re-init of the I2C driver.
+ACTION=="add", SUBSYSTEM=="i2c", ATTR{name}=="*ft5506*", RUN+="/usr/local/bin/gps-touch-rebind.sh"
