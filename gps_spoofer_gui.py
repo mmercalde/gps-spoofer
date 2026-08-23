@@ -14,11 +14,16 @@ Run:  python3 gps_spoofer_gui.py
 Env:  GPS_GUI_WINDOWED=1  run windowed (dev) instead of borderless fullscreen.
 """
 
+import base64
 import io
+import json
 import os
+import re
+import shutil
 import threading
 import time
 import tkinter as tk
+from datetime import datetime, timezone
 from tkinter import ttk
 
 from gps_spoofer_core import (
@@ -57,6 +62,9 @@ MONO_FONT  = ("Courier", 9)
 
 W, H = 800, 480
 
+URS_TOKEN_URL = "https://urs.earthdata.nasa.gov/api/users/find_or_create_token"
+DEFAULT_EDL_UID = "bajacali"
+
 
 def _hackrf_present():
     """Cheap sysfs check for a HackRF One (VID 1d50 / PID 6089). No subprocess."""
@@ -93,6 +101,9 @@ class GPSSpooferGUI:
         self._mode_buttons = []
         self._roads_buttons = []
         self._current_page = 1
+        self._token_cache_key = None
+        self._token_cache_value = None
+        self._token_busy = False
 
         self._configure_window(root)
         self._build_styles()
@@ -236,6 +247,7 @@ class GPSSpooferGUI:
         right.grid(row=0, column=1, sticky="nsew", padx=(4, 8), pady=6)
         self._build_params(right)
         self._build_maintenance(right)
+        self._build_token(right)
 
     # ── actions ─────────────────────────────────────────────────────────────
     def _build_actions(self, parent):
@@ -280,6 +292,217 @@ class GPSSpooferGUI:
         ]:
             self._buttons[key] = self._mk_button(maint, txt, cmd, color)
             self._buttons[key].pack(fill="x", padx=6, pady=3)
+
+    # ── token (Earthdata) ───────────────────────────────────────────────────
+    def _build_token(self, parent):
+        tok = ttk.Labelframe(parent, text="TOKEN")
+        tok.pack(fill="x", pady=(6, 0))
+        row = self._mk_frame(tok)
+        row.pack(fill="x", padx=6, pady=6)
+        row.columnconfigure(0, weight=1)
+        row.columnconfigure(1, weight=1)
+        self._verify_token_btn = self._mk_button(row, "VERIFY TOKEN", self._do_verify_token, INFO)
+        self._verify_token_btn.grid(row=0, column=0, sticky="ew", padx=(0, 2))
+        self._renew_token_btn = self._mk_button(row, "RENEW TOKEN", self._do_renew_token, WARN)
+        self._renew_token_btn.grid(row=0, column=1, sticky="ew", padx=(2, 0))
+
+    def _gpsdata_path(self):
+        try:
+            import gpsdata
+            if getattr(gpsdata, "__file__", None):
+                return gpsdata.__file__
+        except Exception:
+            pass
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "gpsdata.py")
+
+    def _read_gpsdata_token(self):
+        try:
+            with open(self._gpsdata_path()) as f:
+                content = f.read()
+            m = re.search(r'^TOKEN[ ]*=[ ]*"([^"]*)"', content, flags=re.M)
+            return m.group(1) if m else ""
+        except Exception:
+            return ""
+
+    def _decode_jwt(self, token):
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload))
+
+    def _token_status(self):
+        token = self._read_gpsdata_token()
+        if not token:
+            return None, "tok: missing", MUTED2
+        if token == self._token_cache_key and self._token_cache_value:
+            return self._token_cache_value
+        try:
+            payload = self._decode_jwt(token)
+        except Exception:
+            payload = {}
+        exp = payload.get("exp")
+        uid = payload.get("uid") or DEFAULT_EDL_UID
+        now = int(time.time())
+        if not exp:
+            st = (None, "tok: no exp", WARN)
+        elif exp <= now:
+            st = ("expired", "tok: EXPIRED", DANGER)
+        else:
+            days = (exp - now) / 86400.0
+            st = ("expiring" if days < 7 else "valid",
+                  f"tok: {days:.1f}d",
+                  WARN if days < 7 else GO)
+        self._token_cache_key = token
+        self._token_cache_value = st
+        return st
+
+    def _update_token_label(self):
+        if not hasattr(self, "_token_status_label"):
+            return
+        st = self._token_status()
+        self._token_status_label.configure(text=st[1], fg=st[2])
+
+    def _do_verify_token(self):
+        token = self._read_gpsdata_token()
+        if not token:
+            self._token_status_label.configure(text="tok: missing", fg=DANGER)
+            self._append_log("TOKEN: no TOKEN line found in gpsdata.py")
+            return
+        try:
+            payload = self._decode_jwt(token)
+        except Exception as e:
+            self._token_status_label.configure(text="tok: malformed", fg=DANGER)
+            self._append_log(f"TOKEN: malformed ({e})")
+            return
+        exp = payload.get("exp")
+        uid = payload.get("uid") or "?"
+        now = int(time.time())
+        if exp and exp <= now:
+            self._token_status_label.configure(text="tok: EXPIRED", fg=DANGER)
+            self._append_log(f"TOKEN: EXPIRED (uid={uid})")
+        elif exp:
+            days = (exp - now) / 86400.0
+            dt = datetime.fromtimestamp(exp, tz=timezone.utc).strftime("%Y-%m-%d")
+            self._token_status_label.configure(text=f"tok: {days:.1f}d", fg=(WARN if days < 7 else GO))
+            self._append_log(f"TOKEN: VALID uid={uid} expires {dt} ({days:.1f} days)")
+        else:
+            self._token_status_label.configure(text="tok: no exp", fg=WARN)
+            self._append_log(f"TOKEN: present uid={uid} (no exp)")
+
+    def _do_renew_token(self):
+        if self._token_busy:
+            return
+        username, password = self._get_edl_creds()
+        if not username or not password:
+            self._token_status_label.configure(text="tok: cancelled", fg=MUTED)
+            return
+        self._token_busy = True
+        self._verify_token_btn.configure(state="disabled")
+        self._renew_token_btn.configure(state="disabled")
+        self._token_status_label.configure(text="tok: renewing…", fg=INFO)
+        self._run_async(lambda: self._fetch_and_apply_token(username, password), self._on_renew_done)
+
+    def _get_edl_creds(self):
+        username = os.environ.get("EDL_USERNAME") or core.config.get("edl_username") or DEFAULT_EDL_UID
+        password = os.environ.get("EDL_PASSWORD") or core.config.get("edl_password") or ""
+        if not username or not password:
+            creds = self._credential_dialog(username or DEFAULT_EDL_UID)
+            if creds is None:
+                return None, None
+            username, password = creds
+            core.config["edl_username"] = username
+            core.config["edl_password"] = password
+            from gps_spoofer_core import save_config
+            save_config(core.config)
+        return username, password
+
+    def _credential_dialog(self, default_username):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Earthdata Login")
+        dlg.configure(bg=BG)
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        try:
+            dlg.grab_set()
+        except tk.TclError:
+            pass
+        dlg.geometry("+%d+%d" % (self.root.winfo_rootx() + 140, self.root.winfo_rooty() + 80))
+        result = {}
+        f = self._mk_frame(dlg)
+        f.pack(padx=14, pady=14)
+        tk.Label(f, text="EARTHDATA LOGIN", bg=BG, fg=GO, font=BTN_FONT).grid(row=0, column=0, columnspan=2, pady=(0, 8))
+        tk.Label(f, text="Username", bg=BG, fg=MUTED, font=LABEL_FONT, anchor="w").grid(row=1, column=0, sticky="w", pady=2)
+        user_var = tk.StringVar(value=default_username)
+        tk.Entry(f, textvariable=user_var, bg=SURFACE2, fg=TEXT, insertbackground=TEXT, width=24).grid(row=1, column=1, padx=(6, 0), pady=2)
+        tk.Label(f, text="Password", bg=BG, fg=MUTED, font=LABEL_FONT, anchor="w").grid(row=2, column=0, sticky="w", pady=2)
+        pass_var = tk.StringVar()
+        tk.Entry(f, textvariable=pass_var, show="•", bg=SURFACE2, fg=TEXT, insertbackground=TEXT, width=24).grid(row=2, column=1, padx=(6, 0), pady=2)
+        tk.Label(f, text="Saved on this device for next time.", bg=BG, fg=MUTED2, font=SMALL_FONT).grid(row=3, column=0, columnspan=2, pady=(6, 4))
+        btns = self._mk_frame(f)
+        btns.grid(row=4, column=0, columnspan=2)
+        def _submit(_e=None):
+            result["user"] = user_var.get().strip()
+            result["password"] = pass_var.get()
+            dlg.destroy()
+        self._mk_button(btns, "OK", _submit, GO).pack(side="left", padx=2)
+        self._mk_button(btns, "CANCEL", dlg.destroy, DANGER).pack(side="left", padx=2)
+        dlg.bind("<Return>", _submit)
+        self.root.wait_window(dlg)
+        if not result.get("user") or not result.get("password"):
+            return None
+        return result["user"], result["password"]
+
+    def _fetch_and_apply_token(self, username, password):
+        import requests
+        resp = requests.post(
+            URS_TOKEN_URL,
+            auth=(username, password),
+            headers={"Accept": "application/json"},
+            timeout=30,
+        )
+        if not resp.ok:
+            raise RuntimeError(f"Earthdata Login failed (HTTP {resp.status_code}): {resp.text.strip()[:200]}")
+        try:
+            data = resp.json()
+        except ValueError:
+            raise RuntimeError("Earthdata Login returned non-JSON")
+        token = data.get("access_token")
+        if not token:
+            raise RuntimeError("No access_token in Earthdata response")
+        payload = self._decode_jwt(token)
+        exp = payload.get("exp")
+        if exp and exp <= int(time.time()):
+            raise RuntimeError("Earthdata returned an already-expired token")
+        self._patch_gpsdata(token)
+        return {"exp": exp, "uid": payload.get("uid")}
+
+    def _patch_gpsdata(self, token):
+        path = self._gpsdata_path()
+        with open(path) as f:
+            content = f.read()
+        new_content, n = re.subn(r'^TOKEN[ ]*=[ ]*"[^"]*"', f'TOKEN = "{token}"', content, count=1, flags=re.M)
+        if n != 1:
+            raise RuntimeError("could not find TOKEN line in gpsdata.py")
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup = f"{path}.bak_tokrot_{ts}"
+        shutil.copy2(path, backup)
+        with open(path, "w") as f:
+            f.write(new_content)
+        self._last_backup = backup
+
+    def _on_renew_done(self, result):
+        self._token_busy = False
+        self._verify_token_btn.configure(state="normal")
+        self._renew_token_btn.configure(state="normal")
+        self._token_cache_key = None
+        self._token_cache_value = None
+        if isinstance(result, Exception):
+            self._token_status_label.configure(text="tok: failed", fg=DANGER)
+            self._append_log(f"TOKEN renew failed: {result}")
+            return
+        exp = result.get("exp")
+        uid = result.get("uid") or "?"
+        self._append_log(f"TOKEN renewed: uid={uid} exp={exp} (backup: {getattr(self, '_last_backup', '?')})")
+        self._update_token_label()
 
     # ── running settings (page 1 left) ──────────────────────────────────────
     def _build_running(self, parent):
@@ -337,7 +560,7 @@ class GPSSpooferGUI:
         rr = self._mk_frame(self._route_frame); rr.pack(fill="x", pady=2)
         self._roads_btn = self._mk_button(rr, "ROADS ON", self._toggle_use_roads, GO)
         self._roads_btn.pack(side="left", fill="x", expand=True)
-        self._mk_button(rr, "DRIVE TIME", self._real_drive_time, GO).pack(side="left", fill="x", expand=True, padx=(4, 0))
+        self._mk_button(rr, "SET DRIVE TIME", self._real_drive_time, GO).pack(side="left", fill="x", expand=True, padx=(4, 0))
         self._route_time = tk.Label(self._route_frame, text="", bg=BG, fg=MUTED, font=LABEL_FONT, anchor="w")
         self._route_time.pack(fill="x", pady=(0, 4))
         self._roads_buttons.append(self._roads_btn)
@@ -419,6 +642,8 @@ class GPSSpooferGUI:
         self._file_status.pack(side="left", padx=8)
         self._map_tiles_label = tk.Label(bar, text="map: 0 tiles", bg=SURFACE, fg=MUTED, font=SMALL_FONT)
         self._map_tiles_label.pack(side="left", padx=20)
+        self._token_status_label = tk.Label(bar, text="tok: —", bg=SURFACE, fg=MUTED, font=SMALL_FONT)
+        self._token_status_label.pack(side="left", padx=20)
         self._eph_status = tk.Label(bar, text="", bg=SURFACE, font=SMALL_FONT)
         self._eph_status.pack(side="right", padx=8)
 
@@ -443,6 +668,7 @@ class GPSSpooferGUI:
         self._sync_roads_buttons()
         self._render_buttons(s)
         self._render_statusbar(s)
+        self._update_token_label()
         self._maybe_refresh_map(s)
 
     def _classify(self, s):
@@ -781,7 +1007,10 @@ class GPSSpooferGUI:
     def _sync_roads_buttons(self):
         enabled = core.config.get("use_roads", True)
         for b in self._roads_buttons:
-            b.configure(text=("ROADS ON" if enabled else "ROADS OFF"), fg=(GO if enabled else MUTED))
+            if enabled:
+                b.configure(text="ROADS ON", bg=GO, fg="#04130c", activebackground=GO)
+            else:
+                b.configure(text="ROADS OFF", bg=SURFACE2, fg=MUTED, activebackground=SURFACE2)
 
     def _real_drive_time(self):
         start = self.core.start_latlon
