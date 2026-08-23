@@ -1,0 +1,11 @@
+--- a/vc4-kms-dsi-waveshare-800x480-overlay.dts
++++ b/vc4-kms-dsi-waveshare-800x480-overlay.dts
+@@ -11,7 +11,7 @@
+ 
+ &ft5406 {
+ 	vcc-supply = <&reg_display>;
+-	reset-gpio = <&reg_display 1 1>;
++	reset-gpios = <&reg_display 1 1>;
+ 	touchscreen-size-x = <800>;
+ 	touchscreen-size-y = <480>;
+ };
