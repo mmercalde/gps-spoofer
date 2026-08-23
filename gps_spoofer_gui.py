@@ -474,7 +474,7 @@ class GPSSpooferGUI:
         if usable and current:
             resp = requests.post(
                 RENEW_TOKEN_URL,
-                headers={"Authorization": "Bearer " + current, "Accept": "application/json"},
+                headers={"Authorization": "Bearer " + current},
                 timeout=30,
             )
             if resp.status_code == 401:
