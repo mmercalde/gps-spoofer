@@ -401,6 +401,7 @@ class GPSSpooferGUI:
         self._verify_token_btn.configure(state="disabled")
         self._renew_token_btn.configure(state="disabled")
         self._token_status_label.configure(text="tok: renewing…", fg=INFO)
+        self._append_log("TOKEN: renewing (requesting fresh token from Earthdata)…")
         self._run_async(lambda: self._fetch_and_apply_token(username, password), self._on_renew_done)
 
     def _get_edl_creds(self):
@@ -423,10 +424,7 @@ class GPSSpooferGUI:
         dlg.configure(bg=BG)
         dlg.resizable(False, False)
         dlg.transient(self.root)
-        try:
-            dlg.grab_set()
-        except tk.TclError:
-            pass
+        dlg.attributes("-topmost", True)
         dlg.geometry("+%d+%d" % (self.root.winfo_rootx() + 140, self.root.winfo_rooty() + 80))
         result = {}
         f = self._mk_frame(dlg)
@@ -448,6 +446,13 @@ class GPSSpooferGUI:
         self._mk_button(btns, "OK", _submit, GO).pack(side="left", padx=2)
         self._mk_button(btns, "CANCEL", dlg.destroy, DANGER).pack(side="left", padx=2)
         dlg.bind("<Return>", _submit)
+        dlg.update_idletasks()
+        dlg.lift()
+        dlg.focus_force()
+        try:
+            dlg.grab_set()
+        except tk.TclError:
+            pass
         self.root.wait_window(dlg)
         if not result.get("user") or not result.get("password"):
             return None
@@ -474,6 +479,8 @@ class GPSSpooferGUI:
         exp = payload.get("exp")
         if exp and exp <= int(time.time()):
             raise RuntimeError("Earthdata returned an already-expired token")
+        if token == self._read_gpsdata_token():
+            return {"exp": exp, "uid": payload.get("uid"), "unchanged": True}
         self._patch_gpsdata(token)
         return {"exp": exp, "uid": payload.get("uid")}
 
@@ -503,7 +510,10 @@ class GPSSpooferGUI:
             return
         exp = result.get("exp")
         uid = result.get("uid") or "?"
-        self._append_log(f"TOKEN renewed: uid={uid} exp={exp} (backup: {getattr(self, '_last_backup', '?')})")
+        if result.get("unchanged"):
+            self._append_log(f"TOKEN: already up to date (uid={uid})")
+        else:
+            self._append_log(f"TOKEN renewed: uid={uid} exp={exp} (backup: {getattr(self, '_last_backup', '?')})")
         self._update_token_label()
 
     # ── running settings (page 1 left) ──────────────────────────────────────
@@ -630,7 +640,7 @@ class GPSSpooferGUI:
         f.grid(row=0, column=0, sticky="nsew")
         f.columnconfigure(0, weight=1)
         f.rowconfigure(0, weight=1)
-        self._terminal = tk.Text(f, bg="#06080c", fg="#7e94a8", font=MONO_FONT, wrap="word", height=12,
+        self._terminal = tk.Text(f, bg="#06080c", fg="#7e94a8", font=MONO_FONT, wrap="word", height=12, width=52,
                                  relief="flat", bd=0, padx=6, pady=2, state="disabled", highlightthickness=0)
         self._terminal.grid(row=0, column=0, sticky="nsew")
         clear = self._mk_button(f, "CLEAR", self._clear_log, MUTED)
