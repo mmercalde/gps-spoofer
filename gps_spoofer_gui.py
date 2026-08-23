@@ -64,8 +64,7 @@ LOG_FONT   = ("Courier", 11)
 
 W, H = 800, 480
 
-URS_TOKEN_URL = "https://urs.earthdata.nasa.gov/api/users/find_or_create_token"
-RENEW_TOKEN_URL = "https://urs.earthdata.nasa.gov/api/users/renew_token"
+GENERATE_TOKEN_URL = "https://urs.earthdata.nasa.gov/api/users/token"
 DEFAULT_EDL_UID = "bajacali"
 
 
@@ -396,24 +395,16 @@ class GPSSpooferGUI:
     def _do_renew_token(self):
         if self._token_busy:
             return
-        current = self._read_gpsdata_token()
-        try:
-            exp = self._decode_jwt(current).get("exp") if current else None
-        except Exception:
-            exp = None
-        usable = bool(current) and bool(exp) and exp > int(time.time())
-        username = password = None
-        if not usable:
-            username, password = self._get_edl_creds()
-            if not username or not password:
-                self._token_status_label.configure(text="tok: cancelled", fg=MUTED)
-                return
+        username, password = self._get_edl_creds()
+        if not username or not password:
+            self._token_status_label.configure(text="tok: cancelled", fg=MUTED)
+            return
         self._token_busy = True
         self._verify_token_btn.configure(state="disabled")
         self._renew_token_btn.configure(state="disabled")
-        self._token_status_label.configure(text="tok: renewing…", fg=INFO)
-        self._append_log("TOKEN: renewing (forcing a fresh token)…")
-        self._run_async(lambda: self._fetch_and_apply_token(username, password, current, usable), self._on_renew_done)
+        self._token_status_label.configure(text="tok: generating…", fg=INFO)
+        self._append_log("TOKEN: generating a fresh token…")
+        self._run_async(lambda: self._fetch_and_apply_token(username, password), self._on_renew_done)
 
     def _get_edl_creds(self):
         username = os.environ.get("EDL_USERNAME") or core.config.get("edl_username") or DEFAULT_EDL_UID
@@ -469,30 +460,19 @@ class GPSSpooferGUI:
             return None
         return result["user"], result["password"]
 
-    def _fetch_and_apply_token(self, username, password, current, usable):
+    def _fetch_and_apply_token(self, username, password):
         import requests
-        if usable and current:
-            resp = requests.post(
-                RENEW_TOKEN_URL,
-                headers={"Authorization": "Bearer " + current},
-                timeout=30,
-            )
-            if resp.status_code == 401:
-                resp = requests.post(
-                    URS_TOKEN_URL,
-                    auth=(username, password),
-                    headers={"Accept": "application/json"},
-                    timeout=30,
-                )
-        else:
-            resp = requests.post(
-                URS_TOKEN_URL,
-                auth=(username, password),
-                headers={"Accept": "application/json"},
-                timeout=30,
-            )
+        current = self._read_gpsdata_token()
+        # Matches NASA's "Generate a Token" button: creates a NEW token while the
+        # existing one stays valid until we overwrite gpsdata.py below.
+        resp = requests.post(
+            GENERATE_TOKEN_URL,
+            auth=(username, password),
+            headers={"Accept": "application/json"},
+            timeout=30,
+        )
         if not resp.ok:
-            raise RuntimeError(f"Earthdata token request failed (HTTP {resp.status_code}): {resp.text.strip()[:200]}")
+            raise RuntimeError(f"Earthdata token generation failed (HTTP {resp.status_code}): {resp.text.strip()[:200]}")
         try:
             data = resp.json()
         except ValueError:
@@ -504,8 +484,8 @@ class GPSSpooferGUI:
         exp = payload.get("exp")
         if not exp or exp <= int(time.time()):
             raise RuntimeError("Earthdata returned a token with no valid expiry")
-        if current and token == current:
-            raise RuntimeError("NASA returned the same token (renewal did not produce a new one)")
+        if token == current:
+            raise RuntimeError("generated token is identical to the current one")
         self._patch_gpsdata(token)
         return {"exp": exp, "uid": payload.get("uid")}
 
