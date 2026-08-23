@@ -358,6 +358,8 @@ class GPSSpooferGUI:
     def _update_token_label(self):
         if not hasattr(self, "_token_status_label"):
             return
+        if self._token_busy:
+            return
         st = self._token_status()
         self._token_status_label.configure(text=st[1], fg=st[2])
 
