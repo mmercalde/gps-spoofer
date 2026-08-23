@@ -842,15 +842,24 @@ class GPSSpooferGUI:
         pos = self.core.get_playback_position()
         if s.get("running") and pos:
             return pos[0], pos[1]
+        mode = s.get("location_mode", "")
+        if "Route" in mode:
+            sl = s.get("start_latlon") or [None, None]
+            el = s.get("end_latlon") or [None, None]
+            if sl[0] is not None:
+                return sl[0], sl[1]
+            if el[0] is not None:
+                return el[0], el[1]
+        if "Motion" in mode:
+            mp = s.get("map_playback_latlon")
+            if mp and mp[0] is not None:
+                return mp[0], mp[1]
         if s.get("latitude") is not None and s.get("longitude") is not None:
             return s["latitude"], s["longitude"]
         for key in ("start_latlon", "end_latlon"):
             ll = s.get(key) or [None, None]
             if ll[0] is not None:
                 return ll[0], ll[1]
-        mp = s.get("map_playback_latlon")
-        if mp and mp[0] is not None:
-            return mp[0], mp[1]
         return None, None
 
     def _fetch_map(self, lat, lon, zoom, mtype, w, h):

@@ -1035,7 +1035,15 @@ function toggleMap() {
 
 function updateMap(s, prevRunning) {
   // choose center: moving dot while transmitting, else the target
+  const mode = s.location_mode || '';
   if (s.running && s.playback_lat != null) { mapLat = s.playback_lat; mapLon = s.playback_lon; }
+  else if (mode.includes('Route')) {
+    if (s.start_latlon && s.start_latlon[0] != null) { mapLat = s.start_latlon[0]; mapLon = s.start_latlon[1]; }
+    else if (s.end_latlon && s.end_latlon[0] != null) { mapLat = s.end_latlon[0]; mapLon = s.end_latlon[1]; }
+  }
+  else if (mode.includes('Motion')) {
+    if (s.map_playback_latlon && s.map_playback_latlon[0] != null) { mapLat = s.map_playback_latlon[0]; mapLon = s.map_playback_latlon[1]; }
+  }
   else if (s.latitude != null && s.longitude != null) { mapLat = s.latitude; mapLon = s.longitude; }
   else if (s.start_latlon && s.start_latlon[0] != null) { mapLat = s.start_latlon[0]; mapLon = s.start_latlon[1]; }
   else if (s.end_latlon && s.end_latlon[0] != null) { mapLat = s.end_latlon[0]; mapLon = s.end_latlon[1]; }
