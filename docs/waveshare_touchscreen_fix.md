@@ -5,24 +5,28 @@ The Pi5 field unit's touchscreen (Waveshare 4.3" 800x480 MIPI DSI, capacitive)
 sometimes works and sometimes doesn't — taps are ignored until a reboot.
 
 ## Hardware / driver
-- Controller: FocalTech edt-ft5506 (FT5x06 family) on the panel's I2C bus
+- Controller: FocalTech edt-ft5506 (FT5x06) on the DSI panel I2C bus
   (i2c-11, address 0x38), driven by the kernel edt_ft5x06 module.
 - Device: /sys/bus/i2c/devices/11-0038 (name = "edt-ft5506").
 - Input: "11-0038 generic ft5x06 (79)" -> /dev/input/eventN.
-- DSI overlay: dtoverlay=vc4-kms-dsi-waveshare-800x480 (defines the ts@38 node).
+- DSI overlay: dtoverlay=vc4-kms-dsi-waveshare-800x480 (defines ts@38 and a
+  "7inch-touchscreen-p" regulator GPIO chip at i2c-11/0x45).
 
 ## Root cause
-The FT5506 controller occasionally comes up (or gets stuck) in a state where it
-stops reporting touches. Unbinding and re-binding the I2C driver forces a clean
-re-initialisation and brings it back (dmesg shows the input device re-registering).
+The Waveshare overlay's ts@38 node is incomplete:
+- it uses "reset-gpio" (singular) instead of "reset-gpios", so the edt_ft5x06
+  driver does not reset the controller, and
+- it defines no interrupt, so the driver polls.
 
-## The previous fix was broken
-/etc/udev/rules.d/99-waveshare-touch.rules existed on the field but:
-1. matched ATTR{name}=="*GT911*" (Goodix) while the panel is FocalTech FT5506, and
-2. wrote "echo 1" instead of the device name to unbind/bind, so it never fired.
+The FT5506 therefore comes up in a bad state on some boots (registers but does
+not report touches). A hardware reset fixes it.
+
+The touch reset line is GPIO line 1 of the "7inch-touchscreen-p" chip
+(i2c-11/0x45, rpi_touchscreen_attiny), active-low. On the official 7" panel the
+driver drives it; here it does not, so we pulse it manually.
 
 ## Fix (installed on the field, committed here)
-- scripts/gps-touch-rebind.sh   — find edt-ft5506, unbind, sleep, rebind.
+- scripts/gps-touch-rebind.sh — unbind driver, pulse the reset line, re-bind.
 - config/gps-touch-rebind.service — systemd oneshot at boot (after lightdm).
 - config/99-waveshare-touch.rules — udev rule to run the script on touch hotplug.
 
@@ -40,3 +44,4 @@ re-initialisation and brings it back (dmesg shows the input device re-registerin
 ## Verify
     systemctl status gps-touch-rebind.service
     grep -Ei "ft5|edt" /proc/bus/input/devices
+    gpioinfo 16    # line 1 = "reset", active-low
