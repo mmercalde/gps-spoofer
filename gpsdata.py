@@ -130,7 +130,7 @@ def download_ephemeris():
                     for line in f:
                         if line.strip() and line[0].isdigit():
                             p = line.split()
-                            ts = f"20{int(p[1]):02d}/{int(p[2]):02d}/{int(p[3]):02d},{int(p[4]):02d}:{int(p[5]):02d}:00"
+                            ts = f"20{int(p[1]):02d}/{int(p[2]):02d}/{int(p[3]):02d},12:00:00"  # midday epoch: sat-rich. Midnight edge is sparse (few SVs) -> HW receivers (Garmin) fail to lock; noon has full ephemeris coverage.
                             with open(L_T, "w") as tf: tf.write(ts + "\n")
                             with open(L_F, "w") as ff: ff.write(out + "\n")
                             with open(L_DL, "w") as df:
