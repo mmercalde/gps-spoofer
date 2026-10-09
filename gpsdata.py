@@ -1,13 +1,129 @@
 import os, gzip, shutil, requests, subprocess, sys, time
 from datetime import datetime, timedelta
 
-TOKEN = "eyJ0eXAiOiJKV1QiLCJvcmlnaW4iOiJFYXJ0aGRhdGEgTG9naW4iLCJzaWciOiJlZGxqd3RwdWJrZXlfb3BzIiwiYWxnIjoiUlMyNTYifQ.eyJ0eXBlIjoiVXNlciIsInVpZCI6ImJhamFjYWxpIiwiZXhwIjoxNzkyNjM2MTA1LCJpYXQiOjE3ODc0NTIxMDUsImlzcyI6Imh0dHBzOi8vdXJzLmVhcnRoZGF0YS5uYXNhLmdvdiIsImlkZW50aXR5X3Byb3ZpZGVyIjoiZWRsX29wcyIsImFjciI6ImVkbCIsImFzc3VyYW5jZV9sZXZlbCI6M30.dotAlVxFI4wNGzlAoTrUpU9yLIDht3m2FCG7_4jf-C0a5x3DNJq4b4eGdjs8wjsQq-Dg970gznLOuwRoxneYh4hp2blx61bmMYQ3PND1w9TsVcIBBRyQJk2QhHum4rupff6GSGE9y4jekEPjpT-xwD_s-UXhzrEIjYIRnaMUhNeKfhu88ciLXjSPS74zTPr-St3DbyHnjJSG4Hkf9rULZ7ALSI11SrNtlrAPcKwYnL5COM096-EUcmyg9xW6k2FTsfIpvGutKp66ofneNI96TrwDB8OKqGP1Zb-BZJNdlNKQhLgL9ZOZDRPa0A2LGSb1KuooR2L88ZvyvwN3utH4gg"
+TOKEN = "PASTE_EARTHDATA_BEARER_TOKEN_HERE"  # do NOT commit a real token; set via GUI "RENEW TOKEN" or rotate_token.py
 
 DIR  = os.path.expanduser("~/gps_spoofer/ephemeris")
 L_T  = os.path.join(DIR, "latest_time.txt")
 L_F  = os.path.join(DIR, "latest_file.txt")
 L_DL = os.path.join(DIR, "latest_download.txt")
-MIN_EPH_SIZE = 200_000  # 200KB minimum — incomplete files are ~50KB
+MIN_EPH_SIZE = 200_000  # 200KB minimum — incomplete files are ~50KB (legacy; selection now uses SV coverage, not size)
+
+TOE_WINDOW_SEC   = 2 * 3600   # GPS broadcast ephemeris fit interval is ~±2h around TOE
+MIN_NEAR_TOE_PRN = 6          # min distinct SVs within the fit window of -t for a lockable scenario (Garmin-safe)
+GPS_SDR_SIM = os.path.expanduser("~/gps-sdr-sim/gps-sdr-sim")  # authority on a file's usable time window
+
+
+class EphemerisStaleError(Exception):
+    """No available ephemeris has enough satellites near the requested sim-time.
+    Raised instead of silently keying a sparse/stale scenario (the tonight-bug guardrail)."""
+    pass
+
+
+def _parse_nav_records(filepath):
+    """Yield (prn, epoch_datetime) for each RINEX-2 brdc nav record.
+    epoch is the record's TOC/line-0 time, used as the TOE-proximity anchor."""
+    recs = []
+    try:
+        with open(filepath, errors="replace") as f:
+            lines = f.read().splitlines()
+    except Exception:
+        return recs
+    hdr = next((i for i, l in enumerate(lines) if "END OF HEADER" in l), None)
+    if hdr is None:
+        return recs
+    data = [l for l in lines[hdr + 1:] if l.strip()]
+    for i in range(0, len(data) - 7, 8):          # 8 lines per nav record
+        toks = data[i].split()
+        try:
+            prn = int(toks[0])
+            yy, mm, dd, hh, mi = (int(toks[1]), int(toks[2]), int(toks[3]), int(toks[4]), int(toks[5]))
+            sec = int(float(toks[6])) if len(toks) > 6 else 0
+            yr = 2000 + yy if yy < 80 else 1900 + yy
+            recs.append((prn, datetime(yr, mm, dd, hh, mi, min(sec, 59))))
+        except Exception:
+            continue
+    return recs
+
+
+def near_toe_prn_count(filepath, when, window_sec=TOE_WINDOW_SEC):
+    """Count DISTINCT PRNs that have a nav record whose epoch (TOC/TOE) is within +/-window of `when`.
+    This is THE lockability metric: it is both the selection score and the guardrail check."""
+    prns = {prn for prn, ep in _parse_nav_records(filepath)
+            if abs((ep - when).total_seconds()) <= window_sec}
+    return len(prns)
+
+
+def _file_epoch_bounds(filepath):
+    eps = [ep for _, ep in _parse_nav_records(filepath)]
+    return (min(eps), max(eps)) if eps else (None, None)
+
+
+def _gps_sdr_sim_tmax(filepath):
+    """Ask gps-sdr-sim itself for this file's last USABLE sim-time (its tmax).
+    An out-of-range -t makes gps-sdr-sim print 'tmin=.. tmax=..' and exit BEFORE
+    generating anything, so this is a cheap, authoritative metadata probe — not a
+    generate/fail/retry. A partial current-day file's last record (TOC) can sit past
+    its last usable TOE; this returns the value gps-sdr-sim will actually accept.
+    Returns a datetime, or None if it couldn't be determined."""
+    import re
+    try:
+        r = subprocess.run(
+            [GPS_SDR_SIM, "-e", filepath, "-t", "2099/01/01,00:00:00",
+             "-l", "0,0,0", "-d", "1", "-o", os.devnull],
+            capture_output=True, text=True, timeout=20)
+        m = re.search(r"tmax\s*=\s*(\d{4})/(\d{2})/(\d{2}),(\d{2}):(\d{2}):(\d{2})",
+                      r.stdout + r.stderr)
+        if m:
+            return datetime(*map(int, m.groups()))
+    except Exception:
+        pass
+    return None
+
+
+def select_best_ephemeris(when=None, candidates=None):
+    """Pick the on-disk ephemeris giving the most satellites near `when` (default utcnow),
+    and the sim-time -t to replay it at (= `when`, clamped into the file's epoch range so
+    gps-sdr-sim won't reject it).
+
+    Returns (filepath, ts_str). Raises EphemerisStaleError if the best candidate has fewer
+    than MIN_NEAR_TOE_PRN SVs near -t, or if -t must be clamped more than the fit window away
+    from `when` (i.e. only a stale file exists). This is the loud guardrail that replaces the
+    old silent fall-back to noon-of-yesterday."""
+    import glob
+    if when is None:
+        when = datetime.utcnow()
+    if candidates is None:
+        candidates = sorted(glob.glob(os.path.join(DIR, "brdc*.??n")))
+    best = None  # (count, filepath, t_dt)
+    for fp in candidates:
+        tmin, tmax = _file_epoch_bounds(fp)
+        if tmin is None:
+            continue
+        cnt = near_toe_prn_count(fp, when)        # score by SV coverage near NOW (a stale file scores ~0)
+        t = min(max(when, tmin), tmax)            # -t = now, clamped into the file's replayable range
+        if best is None or cnt > best[0]:
+            best = (cnt, fp, t)
+    if best is None:
+        raise EphemerisStaleError("No ephemeris files available to select from.")
+    cnt, fp, t = best
+    # Clamp -t to the file's LAST USABLE time per gps-sdr-sim itself, so the value we
+    # write to latest_time.txt is accepted up front (no generate/fail/retry downstream).
+    # cnt stays the coverage-near-NOW score (the guardrail is about "now", not the clamp).
+    tmax_usable = _gps_sdr_sim_tmax(fp)
+    if tmax_usable is not None and t > tmax_usable:
+        t = tmax_usable
+    stale_sec = abs((t - when).total_seconds())
+    if cnt < MIN_NEAR_TOE_PRN:
+        raise EphemerisStaleError(
+            f"Best ephemeris {os.path.basename(fp)} has only {cnt} SV(s) within "
+            f"+/-{TOE_WINDOW_SEC//3600}h of {when:%Y/%m/%d %H:%M} UTC (need >= {MIN_NEAR_TOE_PRN}). "
+            f"Refusing to transmit a sparse scenario.")
+    if stale_sec > TOE_WINDOW_SEC:
+        raise EphemerisStaleError(
+            f"Best ephemeris {os.path.basename(fp)} can only be replayed at {t:%Y/%m/%d %H:%M} UTC, "
+            f"{stale_sec/3600:.1f}h from now. Refusing stale scenario.")
+    return fp, t.strftime("%Y/%m/%d,%H:%M:%S")
 
 
 def _wait_for_ntp_sync(max_wait_sec=30):
@@ -106,44 +222,42 @@ def download_ephemeris():
 
     print("NTP synchronised. Proceeding with download.", file=sys.stderr)
 
-    for i in range(4):
-        date = datetime.utcnow() - timedelta(days=i)
+    now = datetime.utcnow()
+    # Download the current UTC day AND recent days as candidates. Keep ALL of them,
+    # INCLUDING today's small partial — selection happens afterwards by satellite
+    # coverage near `now`, NOT by file size. (The old size-reject discarded today's
+    # fresh partial and silently fell back to a stale complete file -> the tonight bug.)
+    for i in range(3):
+        date = now - timedelta(days=i)
         y, ys, doy = date.year, str(date.year)[2:], f"{date.timetuple().tm_yday:03d}"
         url = f"https://cddis.nasa.gov/archive/gnss/data/daily/{y}/{doy}/{ys}n/brdc{doy}0.{ys}n.gz"
         out = os.path.join(DIR, f"brdc{doy}0.{ys}n")
         try:
             r = requests.get(url, headers={"Authorization": f"Bearer {TOKEN}"}, timeout=10)
-            if r.status_code == 200:
+            if r.status_code == 200 and r.content:
                 with open(out+".gz", "wb") as f: f.write(r.content)
                 with gzip.open(out+".gz", "rb") as f_in, open(out, "wb") as f_out:
                     shutil.copyfileobj(f_in, f_out)
                 os.remove(out+".gz")
-
-                # Reject incomplete files — NASA posts partial files early in the day
-                file_size = os.path.getsize(out)
-                if file_size < MIN_EPH_SIZE:
-                    print(f"WARNING: {os.path.basename(out)} too small ({file_size//1024}KB < 200KB), trying previous day.", file=sys.stderr)
-                    os.remove(out)
-                    continue
-
-                with open(out, "r") as f:
-                    for line in f:
-                        if line.strip() and line[0].isdigit():
-                            p = line.split()
-                            ts = f"20{int(p[1]):02d}/{int(p[2]):02d}/{int(p[3]):02d},12:00:00"  # midday epoch: sat-rich. Midnight edge is sparse (few SVs) -> HW receivers (Garmin) fail to lock; noon has full ephemeris coverage.
-                            with open(L_T, "w") as tf: tf.write(ts + "\n")
-                            with open(L_F, "w") as ff: ff.write(out + "\n")
-                            with open(L_DL, "w") as df:
-                                df.write(datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S") + "\n")
-                            return out, ts
-        except:
+        except Exception:
             continue
-    # All downloads failed — fall back to last good cached ephemeris
-    cached_path, cached_ts, cached_age = _load_cached_ephemeris()
-    if cached_path and os.path.getsize(cached_path) >= MIN_EPH_SIZE:
-        print(f"WARNING: Fresh download failed. Using cached ephemeris ({cached_age}): {os.path.basename(cached_path)}", file=sys.stderr)
-        return cached_path, cached_ts
-    return None, None
+
+    # Select by SV coverage near `now` (today's partial beats a stale complete file),
+    # stamp -t = now, and REFUSE loudly if nothing is sat-rich near now. Replaces the
+    # old "noon of whatever file won + silent cache fallback" path.
+    try:
+        fp, ts = select_best_ephemeris(now)
+    except EphemerisStaleError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return None, None
+
+    with open(L_T, "w") as tf: tf.write(ts + "\n")
+    with open(L_F, "w") as ff: ff.write(fp + "\n")
+    with open(L_DL, "w") as df: df.write(now.strftime("%Y-%m-%dT%H:%M:%S") + "\n")
+    sv = near_toe_prn_count(fp, datetime.strptime(ts, "%Y/%m/%d,%H:%M:%S"))
+    print(f"Selected {os.path.basename(fp)}  -t {ts}  ({sv} SVs within "
+          f"+/-{TOE_WINDOW_SEC//3600}h of -t)", file=sys.stderr)
+    return fp, ts
 
 
 if __name__ == "__main__":

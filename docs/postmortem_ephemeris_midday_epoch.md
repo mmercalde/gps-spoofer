@@ -1,3 +1,10 @@
+> **⚠️ SUPERSEDED — 2026-10-08.** The midday-epoch approach described below was replaced by the
+> **near-TOE coverage selector**: pick a current-day, satellite-rich file scored by coverage near *now*,
+> set `-t` ≈ now, clamp `-t` to gps-sdr-sim's `tmax`, and refuse (loud) if coverage is sparse. Forcing
+> noon is now only a degraded fallback. The 200 KB size-reject that caused the 2026-10-08 UTC-rollover
+> no-lock incident is removed. See `docs/GPS_Spoofer_Project_Summary.md` §3 and the current `gpsdata.py`.
+> This document is kept for historical context only.
+
 # Post-mortem: hardware receivers (Garmin) not locking — midnight ephemeris epoch
 
 **Date:** 2026-09-11
