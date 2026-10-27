@@ -937,8 +937,156 @@ class GPSSpooferGUI:
         self._clock_after = self.root.after(1000, self._tick_clock)
 
     # ── actions ─────────────────────────────────────────────────────────────
+    # Pre-transmit coverage verdict (STEP 1-4).  Reuses gpsdata.near_toe_prn_count
+    # and gpsdata.MIN_NEAR_TOE_PRN against the currently-selected ephemeris +
+    # latest_time.txt -t. Read-only: does NOT touch selection, -t, gain, thresholds
+    # or the transmit path. Warns, never blocks.
+    SPOOFER_LOG      = os.path.expanduser("~/gps_spoofer/logs/spoofer.log")
+    _SPOOFER_LOG_CAP = 512 * 1024        # trim to tail once the log exceeds this
+
+    def _resolve_selected_eph_readonly(self):
+        """READ-ONLY copy of core's file-selection order (config['ephemeris_file']
+        else latest_file.txt). Does NOT call core._resolve_ephemeris(), does NOT
+        write config, download, or touch latest_time/latest_file — so it can never
+        perturb the Update Eph / download path. Returns a path or None."""
+        from gps_spoofer_core import LATEST_FILE_PATH, EPHEMERIS_DIR
+        try:
+            eph = self.core.config.get("ephemeris_file")
+            if eph and os.path.exists(eph):
+                return eph
+            if os.path.exists(LATEST_FILE_PATH):
+                name = open(LATEST_FILE_PATH).read().strip()
+                cand = os.path.join(EPHEMERIS_DIR, name)   # abs name -> returned as-is
+                if name and os.path.exists(cand):
+                    return cand
+        except Exception:
+            return None
+        return None
+
+    def _coverage_verdict(self):
+        """Count SVs near -t for the ephemeris GENERATE/TRANSMIT/LOOP will use.
+        Reuses the EXISTING gpsdata.near_toe_prn_count + MIN_NEAR_TOE_PRN against
+        the selected file (read-only) + latest_time.txt -t. Runs off the Tk thread.
+        Fully self-contained: never calls download/update/_resolve_ephemeris, never
+        writes config or ephemeris files. Returns a dict, or None if no eph resolves."""
+        import gpsdata
+        from gps_spoofer_core import LATEST_TIME_PATH
+        eph = self._resolve_selected_eph_readonly()
+        if not eph:
+            return None
+        need = gpsdata.MIN_NEAR_TOE_PRN
+        base = os.path.basename(eph)
+        ts = None
+        try:
+            if os.path.exists(LATEST_TIME_PATH):
+                ts = (open(LATEST_TIME_PATH).read().strip() or None)
+        except Exception:
+            ts = None
+        if not ts:
+            return {"eph": base, "ts": None, "sv": None, "need": need, "good": None}
+        try:
+            when = datetime.strptime(ts, "%Y/%m/%d,%H:%M:%S")
+            sv = gpsdata.near_toe_prn_count(eph, when)
+        except Exception:
+            return {"eph": base, "ts": ts, "sv": None, "need": need, "good": None}
+        return {"eph": base, "ts": ts, "sv": sv, "need": need, "good": sv >= need}
+
+    def _log_verdict(self, action, v, choice):
+        """Append the verdict to ~/gps_spoofer/logs/spoofer.log (survives restarts)."""
+        try:
+            os.makedirs(os.path.dirname(self.SPOOFER_LOG), exist_ok=True)
+            try:
+                if os.path.getsize(self.SPOOFER_LOG) > self._SPOOFER_LOG_CAP:
+                    tail = open(self.SPOOFER_LOG).readlines()[-400:]
+                    with open(self.SPOOFER_LOG, "w") as f:
+                        f.writelines(tail)
+            except OSError:
+                pass
+            good = v.get("good")
+            verdict = "GOOD" if good else ("BAD" if good is False else "UNKNOWN")
+            sv = "?" if v.get("sv") is None else v.get("sv")
+            line = ('{t} {a} verdict={vd} sv={sv} need={need} eph={eph} -t={ts} choice={ch}\n'
+                    .format(t=datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            a=action, vd=verdict, sv=sv, need=v.get("need"),
+                            eph=v.get("eph"), ts=v.get("ts"), ch=choice))
+            with open(self.SPOOFER_LOG, "a") as f:
+                f.write(line)
+        except Exception as e:
+            self._append_log("(verdict log error: {})".format(e))
+
+    def _gate_then(self, action, proceed):
+        """STEP 1: compute the verdict off-thread, then banner + proceed/confirm."""
+        def done(v):
+            if isinstance(v, Exception) or v is None:
+                proceed()                      # can't verdict -> let core report
+                return
+            self._show_verdict_banner(action, v, proceed)
+        self._run_async(self._coverage_verdict, done)
+
+    def _dismiss_verdict_banner(self):
+        aid = getattr(self, "_verdict_after", None)
+        if aid:
+            try: self.root.after_cancel(aid)
+            except Exception: pass
+        self._verdict_after = None
+        ov = getattr(self, "_verdict_overlay", None)
+        if ov is not None:
+            try: ov.destroy()
+            except Exception: pass
+        self._verdict_overlay = None
+
+    def _show_verdict_banner(self, action, v, proceed):
+        """STEP 2-3: big, color-coded, arm's-length banner.
+        GOOD/UNKNOWN -> inform and proceed (auto-dismiss).
+        BAD          -> red, requires a tap: TRANSMIT ANYWAY / CANCEL (never blocks)."""
+        self._dismiss_verdict_banner()
+        good, sv, need = v.get("good"), v.get("sv"), v.get("need")
+        if good:
+            color, head = GO, "GOOD — {} satellites".format(sv)
+        elif good is False:
+            color, head = DANGER, "BAD — only {} satellites (need {})".format(sv, need)
+        else:
+            color, head = WARN, "COVERAGE UNKNOWN"
+
+        ov = tk.Frame(self.root, bg=BG, highlightthickness=4, highlightbackground=color)
+        ov.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.92, relheight=0.84)
+        self._verdict_overlay = ov
+
+        tk.Label(ov, text=head, bg=BG, fg=color,
+                 font=("Helvetica", 38, "bold"), wraplength=W - 90).pack(pady=(26, 4), padx=20)
+        sub = "{}  ·  {}".format(action, v.get("eph") or "?")
+        if v.get("ts"):
+            sub += "  ·  -t {}".format(v["ts"])
+        tk.Label(ov, text=sub, bg=BG, fg=MUTED, font=("Helvetica", 13)).pack(pady=(0, 8), padx=20)
+
+        if good is False:
+            tk.Label(ov, text="Transmit anyway?", bg=BG, fg=TEXT,
+                     font=("Helvetica", 20, "bold")).pack(pady=(6, 14))
+            row = tk.Frame(ov, bg=BG); row.pack(pady=(0, 10))
+
+            def _anyway():
+                self._dismiss_verdict_banner()
+                self._log_verdict(action, v, "PROCEED")
+                proceed()
+
+            def _cancel():
+                self._dismiss_verdict_banner()
+                self._log_verdict(action, v, "CANCEL")
+                self._append_log("{} cancelled — low coverage ({} SV, need {}).".format(action, sv, need))
+
+            tk.Button(row, text="TRANSMIT ANYWAY", command=_anyway, bg=DANGER, fg="#130406",
+                      activebackground=DANGER, activeforeground="#130406", relief="flat", bd=0,
+                      font=("Helvetica", 17, "bold"), padx=22, pady=16, takefocus=0).pack(side="left", padx=12)
+            tk.Button(row, text="CANCEL", command=_cancel, bg=SURFACE2, fg=TEXT,
+                      activebackground=SURFACE2, activeforeground=TEXT, relief="flat", bd=0,
+                      font=("Helvetica", 17, "bold"), padx=22, pady=16, takefocus=0).pack(side="left", padx=12)
+        else:
+            self._log_verdict(action, v, "PROCEED")
+            proceed()
+            self._verdict_after = self.root.after(2200, self._dismiss_verdict_banner)
+
     def _do_generate(self):
-        self._run(self.core.generate)
+        self._gate_then("GENERATE", lambda: self._run(self.core.generate))
 
     def _do_remote(self):
         self._run(self.core.remote_generate)
@@ -947,10 +1095,10 @@ class GPSSpooferGUI:
         self._run(self.core.update_ephemeris)
 
     def _do_sim(self):
-        self._run(self.core.start_sim)
+        self._gate_then("TRANSMIT", lambda: self._run(self.core.start_sim))
 
     def _do_loop(self):
-        self._run(self.core.start_loop)
+        self._gate_then("LOOP", lambda: self._run(self.core.start_loop))
 
     def _do_stop(self):
         self.core.stop_all()
